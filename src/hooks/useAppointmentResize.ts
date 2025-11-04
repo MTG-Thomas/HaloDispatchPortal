@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { Appointment } from '@/types';
+import { DEFAULT_CALENDAR_CONFIG } from '@/lib/calendarConfig';
 
 type ResizeEdge = 'top' | 'bottom';
 
@@ -26,6 +27,8 @@ export function useAppointmentResize(
     previewEndTime: null,
     initialMouseY: null,
   });
+
+  const config = DEFAULT_CALENDAR_CONFIG;
 
   const startResize = useCallback((edge: ResizeEdge, event: React.MouseEvent) => {
     event.stopPropagation();
@@ -54,18 +57,25 @@ export function useAppointmentResize(
     const rect = calendarElement.getBoundingClientRect();
     const y = event.clientY - rect.top;
 
-    // Calendar uses 3px per minute (180px per hour, 45px per 15-min slot)
-    const pixelsPerMinute = 3;
-    const totalMinutes = y / pixelsPerMinute;
+    // Grid uses slotHeight pixels per slot (48px currently)
+    const slotHeight = 48;
+    const slotIndex = Math.floor(y / slotHeight);
 
-    // Round to nearest 15 minutes
-    const roundedMinutes = Math.round(totalMinutes / 15) * 15;
+    // Calculate exact minutes from the slot and position within slot
+    const slotStartMinutes = slotIndex * config.slotIncrement;
+    const yWithinSlot = y - (slotIndex * slotHeight);
+    const fractionalSlot = yWithinSlot / slotHeight;
+    const minutesWithinSlot = fractionalSlot * config.slotIncrement;
 
-    // Calendar starts at 8 AM (480 minutes from midnight)
-    const workDayStartMinutes = 8 * 60;
+    // Total minutes from start of day
+    const totalMinutesFromStart = slotStartMinutes + minutesWithinSlot;
+
+    // Round to nearest increment for snapping
+    const roundedMinutes = Math.round(totalMinutesFromStart / config.slotIncrement) * config.slotIncrement;
+
+    // Calculate hours and minutes from day start
+    const workDayStartMinutes = config.dayStartHour * 60;
     const actualMinutesFromMidnight = workDayStartMinutes + roundedMinutes;
-
-    // Calculate hours and minutes
     const hours = Math.floor(actualMinutesFromMidnight / 60);
     const minutes = actualMinutesFromMidnight % 60;
 
@@ -93,7 +103,7 @@ export function useAppointmentResize(
         }));
       }
     }
-  }, [resizeState]);
+  }, [resizeState, config]);
 
   const handleMouseUp = useCallback(() => {
     if (resizeState.isResizing && resizeState.previewStartTime && resizeState.previewEndTime) {

@@ -25,21 +25,46 @@ export function AppointmentCard({ appointment }: AppointmentCardProps) {
   const getPreviewStyle = () => {
     if (!isResizing) return {};
 
-    // Calculate preview position and dimensions
-    const originalStartMinutes = appointment.startTime.getHours() * 60 + appointment.startTime.getMinutes();
-    const previewStartMinutes = previewStartTime.getHours() * 60 + previewStartTime.getMinutes();
-    const previewEndMinutes = previewEndTime.getHours() * 60 + previewEndTime.getMinutes();
+    // Import config to calculate grid positioning
+    const config = { dayStartHour: 8, dayEndHour: 18, slotIncrement: 15 };
+    const slotHeight = 48; // Must match CalendarColumn
 
-    // Calculate offset from original position (in pixels) - 3px per minute
-    const topOffset = (previewStartMinutes - originalStartMinutes) * 3;
-    const durationMinutes = previewEndMinutes - previewStartMinutes;
+    // Calculate grid rows for preview times
+    const getGridRow = (time: Date) => {
+      const totalMinutesFromMidnight = time.getHours() * 60 + time.getMinutes();
+      const startMinutes = config.dayStartHour * 60;
+      const minutesFromStart = totalMinutesFromMidnight - startMinutes;
+      const slotIndex = Math.floor(minutesFromStart / config.slotIncrement);
+      return slotIndex + 1; // CSS Grid is 1-indexed
+    };
+
+    // Calculate sub-slot offset (0-1 fraction within the slot)
+    const getSubSlotOffset = (time: Date) => {
+      const totalMinutesFromMidnight = time.getHours() * 60 + time.getMinutes();
+      const startMinutes = config.dayStartHour * 60;
+      const minutesFromStart = totalMinutesFromMidnight - startMinutes;
+      const slotIndex = Math.floor(minutesFromStart / config.slotIncrement);
+      const slotStartMinutes = slotIndex * config.slotIncrement;
+      const offsetWithinSlot = minutesFromStart - slotStartMinutes;
+      return offsetWithinSlot / config.slotIncrement;
+    };
+
+    const startRow = getGridRow(previewStartTime);
+    const endRow = getGridRow(previewEndTime);
+    const startOffset = getSubSlotOffset(previewStartTime);
+    const endOffset = getSubSlotOffset(previewEndTime);
+
+    // Calculate actual pixel position
+    const topPx = (startRow - 1) * slotHeight + startOffset * slotHeight;
+    const bottomPx = (endRow - 1) * slotHeight + endOffset * slotHeight;
+    const heightPx = bottomPx - topPx;
 
     return {
       position: 'absolute' as const,
-      top: `${topOffset}px`,
+      top: `${topPx}px`,
       left: 0,
       right: 0,
-      height: `${durationMinutes * 3}px`,
+      height: `${heightPx}px`,
     };
   };
 

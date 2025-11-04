@@ -36,7 +36,7 @@ export function TimeSlot({ agentId, startTime, className, style, children }: Tim
       <div
         ref={ref}
         className={cn(
-          'absolute w-full border-t border-border/50 transition-colors',
+          'border-t border-border/50 transition-colors',
           isDraggedOver && 'bg-primary/10 border-primary',
           className
         )}
