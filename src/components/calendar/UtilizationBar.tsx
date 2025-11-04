@@ -31,9 +31,9 @@ export function UtilizationBar({ agentId, date }: UtilizationBarProps) {
   const [endHour, endMinute] = workingDay.endTime.split(':').map(Number);
   const availableHours = (endHour * 60 + endMinute - (startHour * 60 + startMinute)) / 60;
 
-  // Calculate scheduled hours
+  // Calculate scheduled hours (only count appointments with a valid ticket)
   const dayAppointments = appointments.filter(
-    (apt) => apt.agentId === agentId && isSameDay(apt.startTime, date)
+    (apt) => apt.agentId === agentId && isSameDay(apt.startTime, date) && apt.ticketId // Exclude appointments without tickets
   );
 
   const scheduledMinutes = dayAppointments.reduce((total, apt) => {

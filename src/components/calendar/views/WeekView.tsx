@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { startOfWeek, addDays, format, isSameDay, setHours, setMinutes, isWithinInterval, endOfDay } from 'date-fns';
 import { useDispatchStore } from '@/stores/useDispatchStore';
+import { usePreferencesStore } from '@/stores/preferencesStore';
 import { AppointmentCard } from '../AppointmentCard';
 import { UtilizationBar } from '../UtilizationBar';
 import { TimeSlot } from '../TimeSlot';
@@ -14,6 +15,9 @@ export function WeekView() {
     getAppointmentsForDateRange,
     loadAppointments,
   } = useDispatchStore();
+
+  // Subscribe to selectedResources to detect agent selection changes
+  const selectedResources = usePreferencesStore((state) => state.selectedResources);
 
   const visibleAgents = getVisibleAgents();
   const daysToShow = calendarView === 'week5' ? 5 : 7;
@@ -45,7 +49,7 @@ export function WeekView() {
     console.log('📅 WeekView: Visible agents:', visibleAgents.length, visibleAgents.map(a => a.id));
     loadAppointments(weekStart, weekEnd);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weekStart.getTime(), weekEnd.getTime(), visibleAgents.length]);
+  }, [weekStart.getTime(), weekEnd.getTime(), selectedResources]);
 
   // Separate appointments by time ranges
   const allDayAppointments = appointments.filter((apt) => apt.isAllDay);
@@ -68,9 +72,18 @@ export function WeekView() {
 
   // Helper to get appointments for a specific agent and day
   const getAppointmentsForAgentAndDay = (agentId: string, day: Date) => {
-    return regularAppointments.filter(
-      (apt) => apt.agentId === agentId && isSameDay(apt.startTime, day)
-    );
+    return regularAppointments.filter((apt) => {
+      if (apt.agentId !== agentId) return false;
+
+      // Check if appointment falls on this day (handles multi-day appointments)
+      const dayStart = new Date(day);
+      dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(day);
+      dayEnd.setHours(23, 59, 59, 999);
+
+      // Appointment overlaps with this day if it starts before day ends and ends after day starts
+      return apt.startTime <= dayEnd && apt.endTime >= dayStart;
+    });
   };
 
   // Helper to get all-day appointments for a specific agent and day
@@ -100,82 +113,168 @@ export function WeekView() {
     );
   };
 
-  // Helper to check if two appointments overlap
-  const appointmentsOverlap = (apt1: typeof appointments[number], apt2: typeof appointments[number]) => {
-    return apt1.startTime < apt2.endTime && apt2.startTime < apt1.endTime;
+  // Helper to check if two appointments overlap on a specific day
+  const appointmentsOverlapOnDay = (apt1: typeof appointments[number], apt2: typeof appointments[number], day: Date) => {
+    // Get day boundaries
+    const dayStart = new Date(day);
+    dayStart.setHours(8, 0, 0, 0); // 8 AM start of work day
+    const dayEnd = new Date(day);
+    dayEnd.setHours(18, 0, 0, 0); // 6 PM end of work day
+
+    // Clip appointment times to this day's boundaries
+    const apt1Start = apt1.startTime > dayStart ? apt1.startTime : dayStart;
+    const apt1End = apt1.endTime < dayEnd ? apt1.endTime : dayEnd;
+    const apt2Start = apt2.startTime > dayStart ? apt2.startTime : dayStart;
+    const apt2End = apt2.endTime < dayEnd ? apt2.endTime : dayEnd;
+
+    // Check if clipped times overlap
+    return apt1Start < apt2End && apt2Start < apt1End;
   };
 
-  // Assign columns to appointments using a greedy algorithm
-  const assignColumns = (dayAppointments: typeof appointments[number][]) => {
-    const sorted = [...dayAppointments].sort((a, b) =>
-      a.startTime.getTime() - b.startTime.getTime()
-    );
+  // Google Calendar column-packing algorithm
+  const columnCache = new Map<string, Map<string, { column: number; totalColumns: number }>>();
 
-    const columns: typeof appointments[number][][] = [];
-    const columnAssignment = new Map<string, number>();
-    const maxColumns = new Map<string, number>();
+  const getAppointmentLayout = (dayAppointments: typeof appointments[number][], targetAppointment: typeof appointments[number], day: Date) => {
+    // Create a cache key based on the day's appointments and the day
+    const cacheKey = `${day.toDateString()}-${dayAppointments.map(a => a.id).sort().join(',')}`;
 
-    for (const apt of sorted) {
-      // Find the first column where this appointment doesn't overlap with any existing appointment
-      let assignedColumn = -1;
-      for (let i = 0; i < columns.length; i++) {
-        const hasConflict = columns[i].some(other => appointmentsOverlap(apt, other));
-        if (!hasConflict) {
-          assignedColumn = i;
-          break;
+    if (!columnCache.has(cacheKey)) {
+      // Sort appointments by start time (clipped to day boundaries)
+      const sorted = [...dayAppointments].sort((a, b) => {
+        const dayStart = new Date(day);
+        dayStart.setHours(8, 0, 0, 0);
+        const aStart = a.startTime > dayStart ? a.startTime : dayStart;
+        const bStart = b.startTime > dayStart ? b.startTime : dayStart;
+        return aStart.getTime() - bStart.getTime();
+      });
+
+      // Track which appointments are in which columns
+      const columns: typeof appointments[number][][] = [];
+      const columnAssignment = new Map<string, number>();
+
+      // Assign each appointment to the leftmost available column
+      for (const apt of sorted) {
+        let assignedColumn = -1;
+
+        // Try to place in existing columns
+        for (let col = 0; col < columns.length; col++) {
+          const hasConflict = columns[col].some(other => appointmentsOverlapOnDay(apt, other, day));
+          if (!hasConflict) {
+            assignedColumn = col;
+            break;
+          }
+        }
+
+        // If no column works, create a new one
+        if (assignedColumn === -1) {
+          assignedColumn = columns.length;
+          columns.push([]);
+        }
+
+        columns[assignedColumn].push(apt);
+        columnAssignment.set(apt.id, assignedColumn);
+      }
+
+      // Calculate layout for each appointment
+      const layoutMap = new Map<string, { column: number; totalColumns: number }>();
+
+      for (const apt of sorted) {
+        const myColumn = columnAssignment.get(apt.id)!;
+
+        // Find all appointments that overlap with this one on this day
+        const overlapping = sorted.filter(other =>
+          other.id !== apt.id && appointmentsOverlapOnDay(apt, other, day)
+        );
+
+        // Debug logging for specific appointment (handle both string and number)
+        if (apt.id === 'apt-125027' || apt.id === '125027' || apt.id === 125027) {
+          console.log(`🔍 DEBUG Appointment ${apt.id} "${apt.subject}":`, {
+            id: apt.id,
+            idType: typeof apt.id,
+            startTime: apt.startTime.toLocaleString(),
+            endTime: apt.endTime.toLocaleString(),
+            myColumn,
+            overlappingCount: overlapping.length,
+            overlapping: overlapping.map(o => ({
+              id: o.id,
+              subject: o.subject?.substring(0, 30),
+              start: o.startTime.toLocaleString(),
+              end: o.endTime.toLocaleString(),
+              overlapCheck: {
+                result: appointmentsOverlapOnDay(apt, o, day)
+              }
+            }))
+          });
+        }
+
+        if (overlapping.length === 0) {
+          // No overlaps - full width
+          layoutMap.set(apt.id, { column: 0, totalColumns: 1 });
+          if (apt.id === 'apt-125027' || apt.id === '125027' || apt.id === 125027) {
+            console.log(`  ✅ ${apt.id}: Full width (no overlaps)`);
+          }
+        } else {
+          // Find max column among overlapping appointments
+          let maxColumn = myColumn;
+          for (const other of overlapping) {
+            const otherColumn = columnAssignment.get(other.id)!;
+            maxColumn = Math.max(maxColumn, otherColumn);
+          }
+
+          layoutMap.set(apt.id, {
+            column: myColumn,
+            totalColumns: maxColumn + 1,
+          });
+
+          if (apt.id === 'apt-125027' || apt.id === '125027' || apt.id === 125027) {
+            console.log(`  📏 ${apt.id}: Width ${(100 / (maxColumn + 1)).toFixed(1)}% (column ${myColumn} of ${maxColumn + 1})`);
+          }
         }
       }
 
-      // If no column found, create a new one
-      if (assignedColumn === -1) {
-        assignedColumn = columns.length;
-        columns.push([]);
-      }
-
-      columns[assignedColumn].push(apt);
-      columnAssignment.set(apt.id, assignedColumn);
-
-      // Track the maximum number of columns needed at this appointment's time
-      let maxCols = 0;
-      for (let i = 0; i < columns.length; i++) {
-        if (columns[i].some(other => appointmentsOverlap(apt, other))) {
-          maxCols = i + 1;
-        }
-      }
-      maxColumns.set(apt.id, maxCols);
+      columnCache.set(cacheKey, layoutMap);
     }
 
-    return { columnAssignment, maxColumns };
+    return columnCache.get(cacheKey)!.get(targetAppointment.id)!;
   };
 
   // Calculate overlap groups and positions for appointments
-  const getAppointmentStyleWithOverlap = (appointment: typeof appointments[number], dayAppointments: typeof appointments[number][]) => {
-    const startHour = appointment.startTime.getHours();
-    const startMinute = appointment.startTime.getMinutes();
-    const endHour = appointment.endTime.getHours();
-    const endMinute = appointment.endTime.getMinutes();
+  const getAppointmentStyleWithOverlap = (appointment: typeof appointments[number], dayAppointments: typeof appointments[number][], day: Date) => {
+    // Clip appointment times to this day's work hours (8 AM - 6 PM)
+    const dayStart = new Date(day);
+    dayStart.setHours(8, 0, 0, 0);
+    const dayEnd = new Date(day);
+    dayEnd.setHours(18, 0, 0, 0);
+
+    const clippedStartTime = appointment.startTime > dayStart ? appointment.startTime : dayStart;
+    const clippedEndTime = appointment.endTime < dayEnd ? appointment.endTime : dayEnd;
+
+    const startHour = clippedStartTime.getHours();
+    const startMinute = clippedStartTime.getMinutes();
+    const endHour = clippedEndTime.getHours();
+    const endMinute = clippedEndTime.getMinutes();
 
     // Calculate position in 15-minute increments (3px per minute)
     const startMinutesFromStart = (startHour - 8) * 60 + startMinute;
     const endMinutesFromStart = (endHour - 8) * 60 + endMinute;
     const durationMinutes = endMinutesFromStart - startMinutesFromStart;
 
-    // Get column assignments for all appointments in this day
-    const { columnAssignment, maxColumns } = assignColumns(dayAppointments);
+    // Get layout for this specific appointment
+    const { column, totalColumns } = getAppointmentLayout(dayAppointments, appointment, day);
 
-    const column = columnAssignment.get(appointment.id) ?? 0;
-    const totalColumns = maxColumns.get(appointment.id) ?? 1;
-
-    // Divide the available width based on the maximum columns needed
+    // Divide the available width based on columns in this overlap group
     const widthPercent = 100 / totalColumns;
     const leftPercent = widthPercent * column;
 
+    // Extend height by 2px to create slight visual overlap with next appointment
+    const heightWithOverlap = durationMinutes * 3 + 2;
+
     return {
       top: `${startMinutesFromStart * 3}px`,
-      height: `${durationMinutes * 3}px`,
+      height: `${heightWithOverlap}px`,
       left: `${leftPercent}%`,
       width: `${widthPercent}%`,
-      zIndex: 1,
+      zIndex: column + 1, // Higher z-index for appointments in later columns
     };
   };
 
@@ -313,7 +412,7 @@ export function WeekView() {
                       <div className="absolute inset-0 pointer-events-none">
                         {getAppointmentsForAgentAndDay(agent.id, day).map((appointment) => {
                           const dayAppointments = getAppointmentsForAgentAndDay(agent.id, day);
-                          const style = getAppointmentStyleWithOverlap(appointment, dayAppointments);
+                          const style = getAppointmentStyleWithOverlap(appointment, dayAppointments, day);
                           return (
                             <div
                               key={appointment.id}

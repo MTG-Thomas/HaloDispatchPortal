@@ -99,13 +99,14 @@ export function AppointmentCard({ appointment }: AppointmentCardProps) {
       <div className="flex items-start gap-1 mb-1">
         {getStatusIcon()}
         <div className="text-xs font-semibold truncate flex-1">
-          {ticket?.ticketNumber || appointment.subject}
+          {appointment.subject}
         </div>
       </div>
-      <div className="text-xs font-medium truncate mb-1">{ticket?.title || appointment.subject}</div>
-      <div className="text-xs opacity-90 truncate">
-        {ticket?.customerName || appointment.client_name || appointment.user_name}
-      </div>
+      {(appointment.client_name || appointment.user_name) && (
+        <div className="text-xs opacity-90 truncate">
+          {appointment.client_name || appointment.user_name}
+        </div>
+      )}
       <div className="text-[10px] opacity-75 mt-1">
         {format(previewStartTime, 'h:mm a')} -{' '}
         {format(previewEndTime, 'h:mm a')}

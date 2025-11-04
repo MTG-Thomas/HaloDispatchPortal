@@ -9,6 +9,7 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu';
 import { useDispatchStore } from '@/stores/useDispatchStore';
+import { useConfigStore } from '@/stores/configStore';
 import { CheckCircle, XCircle, Clock, Edit, Trash2, Play } from 'lucide-react';
 import type { Appointment, AppointmentStatus } from '@/types';
 
@@ -19,6 +20,7 @@ interface AppointmentContextMenuProps {
 
 export function AppointmentContextMenu({ appointment, children }: AppointmentContextMenuProps) {
   const { updateAppointment, deleteAppointment, updateTicket } = useDispatchStore();
+  const { config } = useConfigStore();
 
   const handleStatusChange = (status: AppointmentStatus) => {
     updateAppointment(appointment.id, { status });
@@ -40,8 +42,18 @@ export function AppointmentContextMenu({ appointment, children }: AppointmentCon
   };
 
   const handleEdit = () => {
-    // TODO: Open edit dialog
-    console.log('Edit appointment', appointment.id);
+    // Strip "apt-" prefix to get the actual Halo appointment ID
+    const haloAppointmentId = appointment.id.replace(/^apt-/, '');
+
+    // Build the URL to open in Halo PSA (resourceServer already includes https://)
+    const url = `${config.resourceServer}/appointment?id=${haloAppointmentId}&showmenu=false`;
+
+    // Open in a popup window (800x600)
+    window.open(
+      url,
+      'EditAppointment',
+      'width=800,height=600,menubar=no,toolbar=no,location=no,status=no'
+    );
   };
 
   const getStatusIcon = (status: AppointmentStatus) => {

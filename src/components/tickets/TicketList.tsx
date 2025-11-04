@@ -238,7 +238,7 @@ export function TicketList() {
                   className="pl-9"
                 />
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 ml-auto">
                 <ColumnSettings />
                 <RefreshButton />
               </div>

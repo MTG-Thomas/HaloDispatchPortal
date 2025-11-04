@@ -796,6 +796,16 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
 
       // Map HaloAppointment to Appointment
       const appointments: Appointment[] = haloAppointments.map((haloApt) => {
+        // Debug logging for specific appointment
+        if (haloApt.id === 125122) {
+          console.log('🔍 Raw appointment 125122 from API:', {
+            id: haloApt.id,
+            start_date: haloApt.start_date,
+            end_date: haloApt.end_date,
+            subject: haloApt.subject
+          });
+        }
+
         // Appointments come in UTC, ensure they're properly converted to local time
         // If the date string doesn't have 'Z' suffix, append it to indicate UTC
         const startDateStr = haloApt.start_date.endsWith('Z') ? haloApt.start_date : `${haloApt.start_date}Z`;
@@ -803,6 +813,16 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
 
         const startTime = new Date(startDateStr);
         const endTime = new Date(endDateStr);
+
+        // Debug logging for specific appointment after conversion
+        if (haloApt.id === 125122) {
+          console.log('🔍 After conversion:', {
+            startDateStr,
+            endDateStr,
+            startTime: startTime.toLocaleString(),
+            endTime: endTime.toLocaleString()
+          });
+        }
 
         // Determine status based on complete_status
         let status: AppointmentStatus = 'scheduled';

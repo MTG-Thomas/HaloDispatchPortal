@@ -400,16 +400,16 @@ export function TicketList() {
                   className="pl-9"
                 />
               </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={resetColumns}
-                  title="Reset column widths and order"
-                >
-                  <RotateCcw className="h-4 w-4 mr-2" />
-                  Reset Columns
-                </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={resetColumns}
+                title="Reset column widths and order"
+              >
+                <RotateCcw className="h-4 w-4 mr-2" />
+                Reset Columns
+              </Button>
+              <div className="ml-auto">
                 <RefreshButton />
               </div>
             </div>

@@ -107,10 +107,10 @@ export function RefreshButton() {
         size="sm"
         onClick={handleManualRefresh}
         disabled={ticketsLoading}
-        className="h-8"
+        className="h-8 w-8 p-0"
+        title="Refresh tickets"
       >
-        <RefreshCw className={cn('h-3.5 w-3.5 mr-1.5', ticketsLoading && 'animate-spin')} />
-        Refresh
+        <RefreshCw className={cn('h-3.5 w-3.5', ticketsLoading && 'animate-spin')} />
       </Button>
     </div>
   );
