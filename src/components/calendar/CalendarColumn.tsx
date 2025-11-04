@@ -88,8 +88,48 @@ export function CalendarColumn({
     return apt1Start < apt2End && apt2Start < apt1End;
   };
 
-  // Column-packing algorithm for overlapping appointments
+  // Outlook-style column-packing: appointments only constrain each other if they overlap in time
+  // Sort appointments by start time to avoid recursion issues
+  const sortedAppointments = [...regularAppointments].sort(
+    (a, b) => a.startTime.getTime() - b.startTime.getTime()
+  );
+
+  const columnCache = new Map<string, number>();
+
+  // Process appointments in order and assign columns
+  for (const appointment of sortedAppointments) {
+    // Find which columns are occupied by earlier appointments that overlap with this one
+    const overlapping = sortedAppointments.filter(
+      (other) =>
+        other.id !== appointment.id &&
+        appointmentsOverlap(appointment, other) &&
+        columnCache.has(other.id) // Only consider already-processed appointments
+    );
+
+    if (overlapping.length === 0) {
+      columnCache.set(appointment.id, 0);
+      continue;
+    }
+
+    // Get columns used by overlapping appointments
+    const occupiedColumns = new Set<number>();
+    for (const other of overlapping) {
+      occupiedColumns.add(columnCache.get(other.id)!);
+    }
+
+    // Find first available column
+    let column = 0;
+    while (occupiedColumns.has(column)) {
+      column++;
+    }
+
+    columnCache.set(appointment.id, column);
+  }
+
   const getAppointmentLayout = (appointment: Appointment) => {
+    const myColumn = columnCache.get(appointment.id) ?? 0;
+
+    // totalColumns is based ONLY on appointments that actually overlap with this one
     const overlapping = regularAppointments.filter(
       (other) => other.id !== appointment.id && appointmentsOverlap(appointment, other)
     );
@@ -98,37 +138,12 @@ export function CalendarColumn({
       return { column: 0, totalColumns: 1 };
     }
 
-    // Sort all related appointments by start time
-    const allRelated = [appointment, ...overlapping].sort(
-      (a, b) => a.startTime.getTime() - b.startTime.getTime()
-    );
-
-    // Assign columns using leftmost-available strategy
-    const columns: Appointment[][] = [];
-    const columnAssignment = new Map<string, number>();
-
-    for (const apt of allRelated) {
-      let assignedColumn = -1;
-
-      for (let col = 0; col < columns.length; col++) {
-        const hasConflict = columns[col].some((other) => appointmentsOverlap(apt, other));
-        if (!hasConflict) {
-          assignedColumn = col;
-          break;
-        }
-      }
-
-      if (assignedColumn === -1) {
-        assignedColumn = columns.length;
-        columns.push([]);
-      }
-
-      columns[assignedColumn].push(apt);
-      columnAssignment.set(apt.id, assignedColumn);
+    // Find the maximum column among this appointment and its overlapping appointments
+    let maxColumn = myColumn;
+    for (const other of overlapping) {
+      const otherColumn = columnCache.get(other.id) ?? 0;
+      maxColumn = Math.max(maxColumn, otherColumn);
     }
-
-    const myColumn = columnAssignment.get(appointment.id)!;
-    const maxColumn = Math.max(...Array.from(columnAssignment.values()));
 
     return {
       column: myColumn,
@@ -157,15 +172,20 @@ export function CalendarColumn({
 
     // Convert grid positioning to pixels for absolute positioning
     const slotHeight = 48;
+    const spacing = 1; // 1px spacing around appointments (Outlook-style)
     const topPx = (startRow - 1) * slotHeight + startOffset * slotHeight;
     const bottomPx = (endRow - 1) * slotHeight + endOffset * slotHeight;
     const heightPx = bottomPx - topPx;
 
+    // Calculate width percentage with spacing
+    const widthPercent = (1 / totalColumns) * 100;
+    const leftPercent = (column / totalColumns) * 100;
+
     return {
-      top: `${topPx}px`,
-      height: `${heightPx}px`,
-      left: `${(column / totalColumns) * 100}%`,
-      width: `${(1 / totalColumns) * 100}%`,
+      top: `${topPx + spacing}px`,
+      height: `${heightPx - spacing * 2}px`,
+      left: `calc(${leftPercent}% + ${spacing}px)`,
+      width: `calc(${widthPercent}% - ${spacing * 2}px)`,
       zIndex: column + 1,
     };
   };
@@ -295,9 +315,7 @@ export function CalendarColumn({
               className="absolute pointer-events-auto"
               style={style}
             >
-              <div className="h-full px-1">
-                <AppointmentCard appointment={appointment} />
-              </div>
+              <AppointmentCard appointment={appointment} />
             </div>
           );
         })}

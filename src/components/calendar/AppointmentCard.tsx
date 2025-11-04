@@ -26,8 +26,9 @@ export function AppointmentCard({ appointment }: AppointmentCardProps) {
     if (!isResizing) return {};
 
     // Import config to calculate grid positioning
-    const config = { dayStartHour: 8, dayEndHour: 18, slotIncrement: 15 };
+    const config = { dayStartHour: 8, dayEndHour: 17, slotIncrement: 15 };
     const slotHeight = 48; // Must match CalendarColumn
+    const spacing = 1; // Must match CalendarColumn spacing
 
     // Calculate grid rows for preview times
     const getGridRow = (time: Date) => {
@@ -49,22 +50,29 @@ export function AppointmentCard({ appointment }: AppointmentCardProps) {
       return offsetWithinSlot / config.slotIncrement;
     };
 
-    const startRow = getGridRow(previewStartTime);
-    const endRow = getGridRow(previewEndTime);
-    const startOffset = getSubSlotOffset(previewStartTime);
-    const endOffset = getSubSlotOffset(previewEndTime);
+    // Calculate preview position
+    const previewStartRow = getGridRow(previewStartTime);
+    const previewEndRow = getGridRow(previewEndTime);
+    const previewStartOffset = getSubSlotOffset(previewStartTime);
+    const previewEndOffset = getSubSlotOffset(previewEndTime);
 
-    // Calculate actual pixel position
-    const topPx = (startRow - 1) * slotHeight + startOffset * slotHeight;
-    const bottomPx = (endRow - 1) * slotHeight + endOffset * slotHeight;
-    const heightPx = bottomPx - topPx;
+    const previewTopPx = (previewStartRow - 1) * slotHeight + previewStartOffset * slotHeight;
+    const previewBottomPx = (previewEndRow - 1) * slotHeight + previewEndOffset * slotHeight;
+    const previewHeightPx = previewBottomPx - previewTopPx;
 
+    // Calculate current position
+    const currentStartRow = getGridRow(appointment.startTime);
+    const currentStartOffset = getSubSlotOffset(appointment.startTime);
+    const currentTopPx = (currentStartRow - 1) * slotHeight + currentStartOffset * slotHeight;
+
+    // Calculate the delta to translate the card to preview position
+    const deltaY = previewTopPx - currentTopPx;
+
+    // Use transform to move the card and update height
+    // This keeps the card in its positioned context but visually moves it
     return {
-      position: 'absolute' as const,
-      top: `${topPx}px`,
-      left: 0,
-      right: 0,
-      height: `${heightPx}px`,
+      transform: `translateY(${deltaY}px)`,
+      height: `${previewHeightPx - spacing * 2}px`,
     };
   };
 
@@ -89,14 +97,15 @@ export function AppointmentCard({ appointment }: AppointmentCardProps) {
       <div
         ref={dragRef}
         className={cn(
-          'rounded border-l-4 p-2 text-gray-900 shadow-md hover:shadow-lg cursor-grab active:cursor-grabbing relative group',
-          !isResizing && 'h-full transition-all hover:scale-[1.02]',
+          'h-full rounded border-l-4 p-2 text-gray-900 shadow-sm hover:shadow-md cursor-grab active:cursor-grabbing relative group',
+          !isResizing && 'transition-all hover:scale-[1.01]',
           isResizing && 'z-50',
           isCompleted && 'opacity-60'
         )}
         style={{
           ...(isResizing ? getPreviewStyle() : undefined),
           backgroundColor: appointment.colour || undefined,
+          borderLeftColor: appointment.colour ? `color-mix(in srgb, ${appointment.colour} 60%, white)` : undefined,
         }}
         onClick={() => console.log('Open appointment', appointment.id)}
       >
