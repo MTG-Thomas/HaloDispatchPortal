@@ -21,10 +21,11 @@ import type { Ticket as HaloTicket } from '@/types/halo';
 interface TriageDispatchModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  ticket: HaloTicket;
+  ticket?: HaloTicket; // Optional for creating new tickets
   dropLocation?: {
     agentId: number;
     startTime: Date;
+    endTime?: Date; // Optional end time from timeslot selection
   };
 }
 
@@ -63,8 +64,12 @@ export function TriageDispatchModal({
   const handleSubmit = async () => {
     // Validate form
     if (!validate()) {
+      // Check if error is due to Unknown client
+      const isUnknownClient = triage.user?.client_id === 1;
       toast.error('Validation failed', {
-        description: 'Please fill in all required fields',
+        description: isUnknownClient
+          ? 'Cannot save to Unknown client. Please select a valid user.'
+          : 'Please fill in all required fields',
       });
       return;
     }
@@ -73,25 +78,36 @@ export function TriageDispatchModal({
 
     try {
       let ticketUpdateSuccess = true;
+      let createdOrUpdatedTicketId = ticket?.id;
+      const isNewTicket = !ticket || !ticket.id || ticket.id <= 0;
 
-      // Step 1: Update ticket if triage fields changed
-      if (triageHasChanged) {
+      // Step 1: Create or update ticket if triage fields changed or if creating new
+      if (triageHasChanged || isNewTicket) {
         try {
-          await createOrUpdateTicket({
+          const ticketData: Record<string, string | number> = {
             tickettype_id: triage.tickettype_id!.toString(),
             summary: triage.summary,
-            details_html: ticket.details || '<p></p>', // Keep existing details
+            details_html: ticket?.details || '<p></p>',
             impact: triage.impact.toString(),
             urgency: triage.urgency.toString(),
             category_1: triage.category_1,
             team: triage.team,
             agent_id: triage.agent_id.toString(),
             user_id: triage.user_id!,
-          });
+          };
+
+          // Only include ID if updating existing ticket
+          if (!isNewTicket) {
+            ticketData.id = ticket!.id;
+          }
+
+          const result = await createOrUpdateTicket(ticketData);
+          // The API returns an array with the created/updated ticket
+          createdOrUpdatedTicketId = result[0]?.id;
         } catch (error) {
-          console.error('Failed to update ticket:', error);
+          console.error('Failed to create/update ticket:', error);
           ticketUpdateSuccess = false;
-          throw error; // Stop here, don't create appointment if ticket update fails
+          throw error; // Stop here, don't create appointment if ticket creation/update fails
         }
       }
 
@@ -107,32 +123,39 @@ export function TriageDispatchModal({
           open_appointment_status: 0,
           appointment_location: dispatch.appointment_location || 0,
           subject: dispatch.subject,
-          ticket_id: ticket.id,
+          ticket_id: createdOrUpdatedTicketId || 0,
           note_html: dispatch.note_html || '<p></p>',
           agent_id: dispatch.agent_id!,
           attendees: dispatch.attendees || '',
-          // Include client/site/user from ticket
-          client_id: ticket.client_id,
-          site_id: ticket.site_id,
-          user_id: ticket.user_id,
+          // Include client/site/user from triage form
+          client_id: triage.user?.client_id || 0,
+          site_id: triage.user?.site_id || 0,
+          user_id: triage.user_id || 0,
         });
 
         // Success!
+        const successMessage = isNewTicket
+          ? 'Ticket created and appointment scheduled'
+          : triageHasChanged
+          ? 'Ticket updated and appointment created'
+          : 'Appointment created';
+
         toast.success('Appointment scheduled successfully', {
-          description: triageHasChanged
-            ? 'Ticket updated and appointment created'
-            : 'Appointment created',
+          description: successMessage,
         });
 
         onOpenChange(false);
       } catch (error) {
         console.error('Failed to create appointment:', error);
 
-        if (ticketUpdateSuccess && triageHasChanged) {
-          // Partial success: ticket updated but appointment failed
+        if (ticketUpdateSuccess && (triageHasChanged || isNewTicket)) {
+          // Partial success: ticket created/updated but appointment failed
+          const partialSuccessMsg = isNewTicket
+            ? 'Ticket was created successfully, but the appointment could not be created. Please try creating the appointment manually.'
+            : 'Ticket was updated successfully, but the appointment could not be created. Please try creating the appointment manually.';
+
           toast.error('Appointment creation failed', {
-            description:
-              'Ticket was updated successfully, but the appointment could not be created. Please try creating the appointment manually.',
+            description: partialSuccessMsg,
           });
           onOpenChange(false); // Close modal per user preference
         } else {
@@ -143,8 +166,9 @@ export function TriageDispatchModal({
         }
       }
     } catch (error) {
-      // Ticket update failed, already logged and toasted above
-      toast.error('Failed to update ticket', {
+      // Ticket creation/update failed, already logged and toasted above
+      const errorMsg = isNewTicket ? 'Failed to create ticket' : 'Failed to update ticket';
+      toast.error(errorMsg, {
         description: error instanceof Error ? error.message : 'Unknown error',
       });
     } finally {

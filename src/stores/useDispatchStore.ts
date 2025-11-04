@@ -67,6 +67,7 @@ interface DispatchState {
     clientCacheLoading: boolean;
     viewListsLoading: boolean;
     ticketsLoading: boolean;
+    ticketsRefreshing: boolean; // Background refresh without hiding content
     appointmentsLoading: boolean;
     appointmentTypesLoading: boolean;
 
@@ -147,7 +148,7 @@ interface DispatchState {
     toggleListSelection: (listId: number) => void;
 
     // Tickets
-    loadTicketsForLists: (listIds?: number[], page?: number) => Promise<void>;
+    loadTicketsForLists: (listIds?: number[], page?: number, isRefresh?: boolean) => Promise<void>;
     refreshTickets: () => Promise<void>;
 
     // Appointments
@@ -197,6 +198,7 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
     clientCacheLoading: false,
     viewListsLoading: false,
     ticketsLoading: false,
+    ticketsRefreshing: false,
     appointmentsLoading: false,
     appointmentTypesLoading: false,
     clientCacheError: null,
@@ -828,7 +830,7 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
     },
 
     // Load Tickets for Lists
-    loadTicketsForLists: async (listIds?: number[], page?: number) => {
+    loadTicketsForLists: async (listIds?: number[], page?: number, isRefresh = false) => {
         const state = get();
         const listsToLoad = listIds || state.selectedListIds;
         const pageToLoad = page !== undefined ? page : state.currentPage;
@@ -840,7 +842,12 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
             return;
         }
 
-        set({ ticketsLoading: true, ticketsError: null });
+        // Use ticketsRefreshing for background refreshes, ticketsLoading for initial load
+        if (isRefresh) {
+            set({ ticketsRefreshing: true, ticketsError: null });
+        } else {
+            set({ ticketsLoading: true, ticketsError: null });
+        }
 
         try {
             // Fetch tickets for each list separately
@@ -890,6 +897,7 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
                 haloTickets: enrichedTickets,
                 totalRecords: totalCount,
                 ticketsLoading: false,
+                ticketsRefreshing: false,
                 lastRefreshTime: new Date(),
             });
         } catch (error) {
@@ -900,6 +908,7 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
                         ? error.message
                         : "Failed to load tickets",
                 ticketsLoading: false,
+                ticketsRefreshing: false,
             });
         }
     },
@@ -909,7 +918,8 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
         const state = get();
         await state.loadTicketsForLists(
             state.selectedListIds,
-            state.currentPage
+            state.currentPage,
+            true // isRefresh - don't show loading spinner
         );
     },
 

@@ -8,6 +8,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { AlertTriangle } from 'lucide-react';
 import { UserCombobox } from './UserCombobox';
 import { CategoryCombobox } from './CategoryCombobox';
 import { AgentCombobox } from './AgentCombobox';
@@ -87,6 +88,15 @@ export function TriageSection({
           onValueChange={onUserSelect}
           error={getError('triage', 'user_id')}
         />
+        {/* Warning for Unknown client */}
+        {formData.user && formData.user.client_id === 1 && (
+          <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-2 text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
+            <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+            <p className="text-xs">
+              Cannot save to Unknown client. Please select a valid user.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Ticket Type */}

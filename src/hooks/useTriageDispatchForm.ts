@@ -8,11 +8,12 @@ import type {
 } from '@/types/halo';
 
 interface UseTriageDispatchFormProps {
-  ticket: HaloTicket;
+  ticket?: HaloTicket; // Optional for creating new tickets
   clientCache: ClientCache | null;
   dropLocation?: {
     agentId: number;
     startTime: Date;
+    endTime?: Date; // Optional end time from timeslot selection
   };
 }
 
@@ -31,19 +32,22 @@ export function useTriageDispatchForm({
   clientCache,
   dropLocation,
 }: UseTriageDispatchFormProps) {
-  // Calculate initial end time (30 minutes from start)
-  const initialEndTime = dropLocation?.startTime
+  // Calculate initial end time
+  // Use endTime from selection if provided, otherwise default to 30 minutes from start
+  const initialEndTime = dropLocation?.endTime
+    ? dropLocation.endTime
+    : dropLocation?.startTime
     ? new Date(dropLocation.startTime.getTime() + 30 * 60 * 1000)
     : null;
 
   // Get default ticket type (first by ID)
   const defaultTicketTypeId = useMemo(() => {
-    if (ticket.tickettype_id) return ticket.tickettype_id;
+    if (ticket?.tickettype_id) return ticket.tickettype_id;
     const ticketTypes = clientCache?.tickettypes
       .filter((type) => type.cancreate && type.visible)
       .sort((a, b) => a.id - b.id);
     return ticketTypes?.[0]?.id || null;
-  }, [ticket.tickettype_id, clientCache]);
+  }, [ticket?.tickettype_id, clientCache]);
 
   // Get default appointment type (first by ID from lookup 63)
   const defaultAppointmentTypeId = useMemo(() => {
@@ -56,7 +60,7 @@ export function useTriageDispatchForm({
 
   // Construct user object from ticket data if available
   const initialUser: HaloUser | null = useMemo(() => {
-    if (!ticket.user_id) return null;
+    if (!ticket?.user_id) return null;
     return {
       id: ticket.user_id,
       name: ticket.user_name || '',
@@ -113,24 +117,24 @@ export function useTriageDispatchForm({
 
   // Initial form state
   const [triage, setTriage] = useState<TriageFormData>({
-    user_id: ticket.user_id || null,
+    user_id: ticket?.user_id || null,
     user: initialUser,
     tickettype_id: defaultTicketTypeId,
-    summary: ticket.summary || '',
-    impact: ticket.impact || 3, // Default to Medium (3)
-    urgency: ticket.urgency || 3, // Default to Medium (3)
-    category_1: ticket.category_1 || '',
+    summary: ticket?.summary || '',
+    impact: ticket?.impact || 3, // Default to Medium (3)
+    urgency: ticket?.urgency || 3, // Default to Medium (3)
+    category_1: ticket?.category_1 || '',
     // If dropped on specific agent's calendar, use that agent's team and id
-    team: dropAgent?.team || ticket.team || '',
-    agent_id: dropAgent?.id || ticket.agent_id || 1, // Default to Unassigned (1)
+    team: dropAgent?.team || ticket?.team || '',
+    agent_id: dropAgent?.id || ticket?.agent_id || 1, // Default to Unassigned (1)
   });
 
   const [dispatch, setDispatch] = useState<DispatchFormData>({
-    subject: ticket.summary || '',
+    subject: ticket?.summary || '',
     start_date: dropLocation?.startTime || null,
     end_date: initialEndTime,
     // Use drop agent if available, otherwise ticket agent
-    agent_id: dropAgent?.id || ticket.agent_id || null,
+    agent_id: dropAgent?.id || ticket?.agent_id || null,
     appointment_type_id: defaultAppointmentTypeId,
     attendees: '',
     note_html: '',
@@ -251,6 +255,13 @@ export function useTriageDispatchForm({
     // Validate triage
     if (!triage.user_id) {
       newErrors.triage = { ...newErrors.triage, user_id: 'User is required' };
+    }
+    // Check for Unknown client (client_id === 1)
+    if (triage.user && triage.user.client_id === 1) {
+      newErrors.triage = {
+        ...newErrors.triage,
+        user_id: 'Cannot save to Unknown client. Please select a valid user.'
+      };
     }
     if (!triage.summary.trim()) {
       newErrors.triage = { ...newErrors.triage, summary: 'Summary is required' };

@@ -217,6 +217,7 @@ export function TicketList() {
     haloTickets,
     selectedListIds,
     ticketsLoading,
+    ticketsRefreshing,
     ticketsError,
     selectedTicketAreaId,
     currentPage,
@@ -461,7 +462,13 @@ export function TicketList() {
                 <RotateCcw className="h-4 w-4 mr-2" />
                 Reset Columns
               </Button>
-              <div className="ml-auto">
+              <div className="ml-auto flex items-center gap-2">
+                {ticketsRefreshing && (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    <span>Refreshing...</span>
+                  </div>
+                )}
                 <RefreshButton />
               </div>
             </div>
