@@ -1,5 +1,4 @@
 import { format, setHours, setMinutes } from 'date-fns';
-import { useState } from 'react';
 import { AppointmentCard } from './AppointmentCard';
 import { TimeSlot } from './TimeSlot';
 import { GripHorizontal } from 'lucide-react';
@@ -9,7 +8,7 @@ import type { CalendarConfig } from '@/lib/calendarConfig';
 import { generateTimeSlots, getGridRowFromTime, getSubSlotOffset } from '@/lib/calendarConfig';
 
 interface CalendarColumnProps {
-  agentId: string;
+  agentId: number; // Changed from string to number
   date: Date;
   appointments: Appointment[];
   config: CalendarConfig;
@@ -292,13 +291,26 @@ export function CalendarColumn({
         data-calendar-day
       >
         {/* Time grid slots with drop zones */}
-        {timeSlots.map((slot) => {
+        {timeSlots.map((slot, index) => {
           const slotStartTime = setHours(setMinutes(date, slot.minute), slot.hour);
+
+          // Highlight the next upcoming time slot (only for today)
+          // This is the slot that the current time is within or the next one
+          const now = new Date();
+          const nextSlotTime = index < timeSlots.length - 1
+            ? setHours(setMinutes(date, timeSlots[index + 1].minute), timeSlots[index + 1].hour)
+            : null;
+
+          const isCurrentTime = isToday &&
+            slotStartTime <= now &&
+            (nextSlotTime === null || now < nextSlotTime);
+
           return (
             <TimeSlot
               key={slot.index}
               agentId={agentId}
               startTime={slotStartTime}
+              isCurrentTime={isCurrentTime}
               className={cn(
                 slot.minute === 0 && 'border-t-2'
               )}

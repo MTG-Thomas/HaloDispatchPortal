@@ -5,6 +5,14 @@ interface LoadingScreenProps {
   message?: string;
 }
 
+const LOADING_MESSAGES = [
+  'Loading configuration...',
+  'Connecting to Halo API...',
+  'Fetching ticket areas...',
+  'Loading agents and teams...',
+  'Preparing workspace...',
+];
+
 /**
  * LoadingScreen Component
  *
@@ -13,19 +21,11 @@ interface LoadingScreenProps {
 export function LoadingScreen({ message = 'Loading...' }: LoadingScreenProps) {
   const [loadingMessage, setLoadingMessage] = useState(message);
 
-  const messages = [
-    'Loading configuration...',
-    'Connecting to Halo API...',
-    'Fetching ticket areas...',
-    'Loading agents and teams...',
-    'Preparing workspace...',
-  ];
-
   useEffect(() => {
     let index = 0;
     const interval = setInterval(() => {
-      index = (index + 1) % messages.length;
-      setLoadingMessage(messages[index]);
+      index = (index + 1) % LOADING_MESSAGES.length;
+      setLoadingMessage(LOADING_MESSAGES[index]);
     }, 2000);
 
     return () => clearInterval(interval);

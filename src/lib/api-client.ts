@@ -24,14 +24,14 @@ let hasCriticalError = false;
 /**
  * Check if an error is critical (network, CORS, timeout, etc.)
  */
-function isCriticalError(error: any): boolean {
+function isCriticalError(error: unknown): boolean {
   // Network errors (CORS, DNS, connection refused, timeout, etc.)
   if (error instanceof TypeError && error.message.includes('fetch')) {
     return true;
   }
 
   // Check for common network error messages
-  const errorMsg = error.message?.toLowerCase() || '';
+  const errorMsg = (error as Error).message?.toLowerCase() || '';
   if (
     errorMsg.includes('cors') ||
     errorMsg.includes('network') ||
@@ -77,13 +77,6 @@ export async function apiRequest<T>(
     throw new ApiError(401, 'Unauthorized', 'No access token available');
   }
 
-  console.log('🔐 API Request Debug:', {
-    url,
-    hasAccessToken: !!tokens.access_token,
-    tokenPrefix: tokens.access_token?.substring(0, 20) + '...',
-    endpoint,
-  });
-
   // Prepare headers
   const headers = new Headers(options.headers);
   headers.set('Authorization', `Bearer ${tokens.access_token}`);
@@ -96,17 +89,8 @@ export async function apiRequest<T>(
       headers,
     });
 
-    console.log('📡 API Response:', {
-      url,
-      status: response.status,
-      statusText: response.statusText,
-      ok: response.ok,
-    });
-
     // If we get a 401, try to refresh the token and retry once
     if (response.status === 401) {
-      console.log('Received 401, attempting token refresh...');
-
       // Use existing refresh promise if one is in progress, otherwise start a new one
       if (!refreshPromise) {
         refreshPromise = refreshAuthToken({
@@ -122,8 +106,6 @@ export async function apiRequest<T>(
       const refreshSuccess = await refreshPromise;
 
       if (refreshSuccess) {
-        console.log('Token refresh successful, retrying request...');
-
         // Get new tokens
         tokens = loadTokens();
 
@@ -155,7 +137,7 @@ export async function apiRequest<T>(
 
     // Parse and return JSON response
     return response.json();
-  } catch (error: any) {
+  } catch (error: unknown) {
     // Check if this is a critical error (network, CORS, etc.)
     if (isCriticalError(error) && !hasCriticalError) {
       hasCriticalError = true;
@@ -164,7 +146,7 @@ export async function apiRequest<T>(
       const { setCriticalApiError } = useDispatchStore.getState();
       setCriticalApiError(
         'Unable to connect to Halo PSA API',
-        error.message || 'Network error. Please check your connection and CORS settings.'
+        (error as Error).message || 'Network error. Please check your connection and CORS settings.'
       );
 
       // Throw a critical error
@@ -191,7 +173,7 @@ export function resetCriticalErrorFlag() {
 /**
  * Make a GET request
  */
-export async function get<T>(endpoint: string, params?: Record<string, any>): Promise<T> {
+export async function get<T>(endpoint: string, params?: Record<string, string | number | boolean>): Promise<T> {
   const queryString = params ? `?${buildQueryString(params)}` : '';
   return apiRequest<T>(`${endpoint}${queryString}`, {
     method: 'GET',
@@ -201,7 +183,7 @@ export async function get<T>(endpoint: string, params?: Record<string, any>): Pr
 /**
  * Make a POST request
  */
-export async function post<T>(endpoint: string, body?: any): Promise<T> {
+export async function post<T>(endpoint: string, body?: unknown): Promise<T> {
   return apiRequest<T>(endpoint, {
     method: 'POST',
     body: body ? JSON.stringify(body) : undefined,
@@ -211,7 +193,7 @@ export async function post<T>(endpoint: string, body?: any): Promise<T> {
 /**
  * Make a PUT request
  */
-export async function put<T>(endpoint: string, body?: any): Promise<T> {
+export async function put<T>(endpoint: string, body?: unknown): Promise<T> {
   return apiRequest<T>(endpoint, {
     method: 'PUT',
     body: body ? JSON.stringify(body) : undefined,
@@ -230,7 +212,7 @@ export async function del<T>(endpoint: string): Promise<T> {
 /**
  * Build a query string from an object
  */
-function buildQueryString(params: Record<string, any>): string {
+function buildQueryString(params: Record<string, string | number | boolean>): string {
   const searchParams = new URLSearchParams();
 
   Object.entries(params).forEach(([key, value]) => {

@@ -5,24 +5,16 @@ import { WeekView } from './views/WeekView';
 import { MonthView } from './views/MonthView';
 
 export function CalendarGrid() {
-  const { calendarView, loadAppointmentTypes, startAppointmentAutoRefresh, stopAppointmentAutoRefresh } = useDispatchStore();
+  const { calendarView, loadAppointmentTypes, startAppointmentAutoRefresh } = useDispatchStore();
 
   // Initialize appointment types and auto-refresh on mount
   useEffect(() => {
-    console.log('📅 CalendarGrid: Loading appointment types and starting auto-refresh');
-
     // Load appointment types once
     loadAppointmentTypes();
 
     // Start auto-refresh for appointments
     startAppointmentAutoRefresh();
-
-    // Clean up auto-refresh on unmount
-    return () => {
-      console.log('📅 CalendarGrid: Stopping auto-refresh');
-      stopAppointmentAutoRefresh();
-    };
-  }, []);
+  }, [loadAppointmentTypes, startAppointmentAutoRefresh]);
 
   return (
     <div className="flex-1 overflow-auto bg-background">

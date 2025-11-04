@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { format, startOfDay, endOfDay } from 'date-fns';
+import { startOfDay, endOfDay } from 'date-fns';
 import { useDispatchStore } from '@/stores/useDispatchStore';
 import { usePreferencesStore } from '@/stores/preferencesStore';
 import { UtilizationBar } from '../UtilizationBar';
@@ -23,13 +23,10 @@ export function DayView() {
   // Load appointments when date or visible agents change
   useEffect(() => {
     if (visibleAgents.length === 0) {
-      console.log('📅 DayView: Skipping appointment load - no agents selected');
       return;
     }
     const dayStart = startOfDay(selectedDate);
     const dayEnd = endOfDay(selectedDate);
-    console.log('📅 DayView: Loading appointments for', dayStart.toISOString(), 'to', dayEnd.toISOString());
-    console.log('📅 DayView: Visible agents:', visibleAgents.length, visibleAgents.map(a => a.id));
     loadAppointments(dayStart, dayEnd);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDate.toDateString(), selectedResources, visibleAgents.length]);

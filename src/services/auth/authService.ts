@@ -9,7 +9,6 @@ const processedCodes = new Set<string>();
 // Clean up old processed codes periodically (every 5 minutes)
 setInterval(() => {
   if (processedCodes.size > 100) {
-    console.log('Cleaning up processed authorization codes');
     processedCodes.clear();
   }
 }, 5 * 60 * 1000);

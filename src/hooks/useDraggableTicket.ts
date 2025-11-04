@@ -18,6 +18,11 @@ export function useDraggableTicket(ticket: Ticket) {
         type: 'ticket',
         ticket,
       }),
+      canDrag: ({ input }) => {
+        // Don't start drag if clicking on a link or button
+        const target = input.event?.target as HTMLElement;
+        return !target?.closest('a, button');
+      },
       onGenerateDragPreview: ({ nativeSetDragImage }) => {
         setCustomNativeDragPreview({
           nativeSetDragImage,

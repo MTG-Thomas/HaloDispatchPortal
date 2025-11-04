@@ -38,14 +38,11 @@ export function WeekView() {
   // Load appointments when date range or visible agents change
   useEffect(() => {
     if (visibleAgents.length === 0) {
-      console.log('📅 WeekView: Skipping appointment load - no agents selected');
       return;
     }
-    console.log('📅 WeekView: Loading appointments for range', weekStart.toISOString(), 'to', weekEnd.toISOString());
-    console.log('📅 WeekView: Visible agents:', visibleAgents.length, visibleAgents.map(a => a.id));
     loadAppointments(weekStart, weekEnd);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weekStart.getTime(), weekEnd.getTime(), selectedResources, visibleAgents.length]);
+  }, [weekStart.getTime(), weekEnd.getTime(), selectedResources, visibleAgents.length, calendarView]);
 
   // Helper to get appointments for a specific agent and day
   const getAppointmentsForAgentAndDay = (agentId: string, day: Date) => {

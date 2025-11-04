@@ -10,7 +10,7 @@ export function enrichTicket(
   clientCache: ClientCache | null
 ): EnrichedTicket {
   // Default enriched values
-  let enriched: EnrichedTicket = {
+  const enriched: EnrichedTicket = {
     ...ticket,
     clientSiteUser: `${ticket.client_name} / ${ticket.site_name} / ${ticket.user_name}`,
     statusName: 'Unknown',
@@ -48,7 +48,10 @@ export function enrichTicket(
   }
 
   // Compute SLA Time Left
-  if (ticket.onhold) {
+  if (ticket.excludefromsla) {
+    enriched.slaTimeLeft = 'Excluded';
+    enriched.slaState = 'ok';
+  } else if (ticket.onhold) {
     enriched.slaTimeLeft = 'On Hold';
     enriched.slaState = 'onhold';
   } else if (ticket.fixbydate) {

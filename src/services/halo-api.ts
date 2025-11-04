@@ -12,6 +12,18 @@ import type {
   HaloAppointmentType,
   GetAppointmentsParams,
   GetLookupParams,
+  SearchUsersParams,
+  SearchUsersResponse,
+  GetCategoriesParams,
+  HaloCategory,
+  GetTeamsParams,
+  HaloTeam,
+  GetAgentsParams,
+  HaloAgent,
+  GetSitesParams,
+  GetSitesResponse,
+  CreateTicketPayload,
+  Ticket,
 } from '@/types/halo';
 
 /**
@@ -32,7 +44,6 @@ export async function getClientCache(
   params: GetClientCacheParams = { iscachebuild: true }
 ): Promise<ClientCache> {
   const response = await get<ClientCache>('/api/ClientCache', params);
-  console.log('ClientCache API response:', response);
   return response;
 }
 
@@ -166,7 +177,7 @@ export function getAgentPhotoUrl(
  * @param unameaprestriction - Whether to apply name/appointment restrictions (default: true)
  * @returns Array of lookup items (type depends on lookupId)
  */
-export async function getLookup<T = any>(
+export async function getLookup<T = unknown>(
   lookupId: number,
   unameaprestriction: boolean = true
 ): Promise<T[]> {
@@ -242,4 +253,110 @@ export async function createOrUpdateAppointment(
 ): Promise<HaloAppointment[]> {
   // Halo API requires appointments to be sent as an array
   return post<HaloAppointment[]>('/api/appointment', [appointment]);
+}
+
+// ============================================================================
+// Triage & Dispatch API Methods
+// ============================================================================
+
+/**
+ * Search Users - Search for users with optional filtering
+ * Used for selecting ticket users and appointment attendees
+ *
+ * @param params - Search parameters including search query and filters
+ * @returns SearchUsersResponse with users array and count
+ */
+export async function searchUsers(
+  params: SearchUsersParams = {}
+): Promise<SearchUsersResponse> {
+  const defaultParams: SearchUsersParams = {
+    count: 50,
+    includeserviceaccount: false,
+    onlyprospects: false,
+    onlyusers: true,
+    ...params,
+  };
+
+  return get<SearchUsersResponse>('/api/Users', defaultParams);
+}
+
+/**
+ * Get Categories - Fetch service categories for a ticket type and client
+ * Used for ticket categorization in triage
+ *
+ * @param params - Parameters including ticket type ID and client ID
+ * @returns Array of HaloCategory objects
+ */
+export async function getCategories(
+  params: GetCategoriesParams
+): Promise<HaloCategory[]> {
+  return get<HaloCategory[]>('/api/Category', params);
+}
+
+/**
+ * Get Teams - Fetch available teams for a ticket type
+ * Used for team selection in triage
+ *
+ * @param params - Parameters including optional ticket type ID
+ * @returns Array of HaloTeam objects (filtered for active teams that handle requests)
+ */
+export async function getTeams(
+  params: GetTeamsParams = {}
+): Promise<HaloTeam[]> {
+  const teams = await get<HaloTeam[]>('/api/team', params);
+  // Filter to only active teams that handle requests
+  return teams.filter((team) => team.forrequests && !team.inactive);
+}
+
+/**
+ * Get Agents - Fetch agents with optional filtering by team, client, and ticket type
+ * Used for agent selection in both triage and dispatch
+ *
+ * @param params - Optional parameters for filtering agents
+ * @returns Array of HaloAgent objects
+ */
+export async function getAgents(
+  params: GetAgentsParams = {}
+): Promise<HaloAgent[]> {
+  const defaultParams: GetAgentsParams = {
+    reassign: true,
+    basic_fields_only: true,
+    ...params,
+  };
+
+  return get<HaloAgent[]>('/api/agent', defaultParams);
+}
+
+/**
+ * Get Sites - Search for sites with pagination
+ * Used for appointment location selection in dispatch
+ *
+ * @param params - Parameters including pagination and optional search query
+ * @returns GetSitesResponse with sites array and pagination metadata
+ */
+export async function getSites(
+  params: GetSitesParams = {}
+): Promise<GetSitesResponse> {
+  const defaultParams: GetSitesParams = {
+    pageinate: true,
+    page_no: 1,
+    page_size: 100,
+    ...params,
+  };
+
+  return get<GetSitesResponse>('/api/site', defaultParams);
+}
+
+/**
+ * Create or Update Ticket - Create a new ticket or update an existing one
+ * Halo requires tickets to be sent as an array even for single operations
+ *
+ * @param ticketData - Ticket data to create or update
+ * @returns Array with the created/updated ticket
+ */
+export async function createOrUpdateTicket(
+  ticketData: CreateTicketPayload
+): Promise<Ticket[]> {
+  // Halo API requires tickets to be sent as an array
+  return post<Ticket[]>('/api/Tickets', [ticketData]);
 }

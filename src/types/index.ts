@@ -41,7 +41,7 @@ export interface Appointment {
   id: string;
   ticketId: string;
   ticket?: Ticket;
-  agentId: string;
+  agentId: number; // Changed from string to number - no prefix
   startTime: Date;
   endTime: Date;
   status: AppointmentStatus;
@@ -67,7 +67,7 @@ export interface Appointment {
 
 // Agent/Resource
 export interface Agent {
-  id: string;
+  id: number; // Changed from string to number - no prefix
   name: string;
   email: string;
   phone?: string;
@@ -108,7 +108,7 @@ export interface Team {
   id: string;
   name: string;
   description?: string;
-  memberIds: string[];
+  memberIds: number[]; // Changed from string[] to number[]
   color: string; // for calendar display
   isActive: boolean;
 }

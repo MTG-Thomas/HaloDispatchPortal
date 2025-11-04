@@ -3,7 +3,7 @@ import { dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element
 import type { Ticket, Appointment } from '@/types';
 
 interface DropData {
-  agentId: string;
+  agentId: number; // Changed from string to number
   startTime: Date;
 }
 

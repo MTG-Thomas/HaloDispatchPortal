@@ -10,8 +10,10 @@ import { usePreferencesStore } from '@/stores/preferencesStore';
 import { getAgentPhotoUrl } from '@/services/halo-api';
 import { Pagination } from '@/components/tickets/Pagination';
 import { RefreshButton } from '@/components/tickets/RefreshButton';
+import { useDraggableTicket } from '@/hooks/useDraggableTicket';
 import { cn } from '@/lib/utils';
 import type { EnrichedTicket } from '@/types/halo';
+import type { Ticket } from '@/types';
 import { draggable } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
 import { dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
 import type { ColumnConfig } from '@/stores/preferencesStore';
@@ -20,6 +22,56 @@ interface SortableHeaderProps {
   column: ColumnConfig;
   onReorder: (draggedId: string, targetId: string) => void;
   onResize: (columnId: string, width: number) => void;
+}
+
+interface DraggableTicketRowProps {
+  ticket: EnrichedTicket;
+  visibleColumns: ColumnConfig[];
+  renderCell: (column: ColumnConfig, ticket: EnrichedTicket) => React.ReactNode;
+}
+
+function DraggableTicketRow({ ticket, visibleColumns, renderCell }: DraggableTicketRowProps) {
+  // Convert EnrichedTicket to Ticket format for drag and drop
+  const dragTicket: Ticket = {
+    id: ticket.id.toString(),
+    ticketNumber: ticket.id.toString(),
+    title: ticket.summary,
+    description: ticket.details || '',
+    status: 'new',
+    priority: 'medium',
+    customerName: ticket.user_name || '',
+    customerEmail: '',
+    siteName: ticket.site_name || '',
+    category: ticket.category_1 || '',
+    tags: [],
+    createdAt: new Date(ticket.dateoccurred),
+    updatedAt: new Date(ticket.last_update),
+    estimatedDuration: 30,
+  };
+
+  const dragRef = useDraggableTicket(dragTicket);
+
+  return (
+    <tr
+      ref={dragRef}
+      key={`${ticket._listId}-${ticket.id}`}
+      className="border-b hover:bg-muted/30 transition-colors cursor-grab active:cursor-grabbing select-none"
+    >
+      {visibleColumns.map((column) => (
+        <td
+          key={column.id}
+          className="px-3 py-2 overflow-hidden text-ellipsis whitespace-nowrap"
+          style={column.width ? {
+            width: `${column.width}px`,
+            minWidth: `${column.width}px`,
+            maxWidth: `${column.width}px`
+          } : undefined}
+        >
+          {renderCell(column, ticket)}
+        </td>
+      ))}
+    </tr>
+  );
 }
 
 function SortableHeader({ column, onReorder, onResize }: SortableHeaderProps) {
@@ -479,21 +531,12 @@ export function TicketList() {
                   </tr>
                 ) : (
                   filteredTickets.map((ticket) => (
-                    <tr key={`${ticket._listId}-${ticket.id}`} className="border-b hover:bg-muted/30 transition-colors">
-                      {visibleColumns.map((column) => (
-                        <td
-                          key={column.id}
-                          className="px-3 py-2 overflow-hidden text-ellipsis whitespace-nowrap"
-                          style={column.width ? {
-                            width: `${column.width}px`,
-                            minWidth: `${column.width}px`,
-                            maxWidth: `${column.width}px`
-                          } : undefined}
-                        >
-                          {renderCell(column, ticket)}
-                        </td>
-                      ))}
-                    </tr>
+                    <DraggableTicketRow
+                      key={`${ticket._listId}-${ticket.id}`}
+                      ticket={ticket}
+                      visibleColumns={visibleColumns}
+                      renderCell={renderCell}
+                    />
                   ))
                 )}
               </tbody>
