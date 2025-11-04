@@ -79,6 +79,49 @@ export function DayView() {
     return apt1.startTime < apt2.endTime && apt2.startTime < apt1.endTime;
   };
 
+  // Assign columns to appointments using a greedy algorithm
+  const assignColumns = (agentAppointments: typeof dayAppointments[number][]) => {
+    const sorted = [...agentAppointments].sort((a, b) =>
+      a.startTime.getTime() - b.startTime.getTime()
+    );
+
+    const columns: typeof dayAppointments[number][][] = [];
+    const columnAssignment = new Map<string, number>();
+    const maxColumns = new Map<string, number>();
+
+    for (const apt of sorted) {
+      // Find the first column where this appointment doesn't overlap with any existing appointment
+      let assignedColumn = -1;
+      for (let i = 0; i < columns.length; i++) {
+        const hasConflict = columns[i].some(other => appointmentsOverlap(apt, other));
+        if (!hasConflict) {
+          assignedColumn = i;
+          break;
+        }
+      }
+
+      // If no column found, create a new one
+      if (assignedColumn === -1) {
+        assignedColumn = columns.length;
+        columns.push([]);
+      }
+
+      columns[assignedColumn].push(apt);
+      columnAssignment.set(apt.id, assignedColumn);
+
+      // Track the maximum number of columns needed at this appointment's time
+      let maxCols = 0;
+      for (let i = 0; i < columns.length; i++) {
+        if (columns[i].some(other => appointmentsOverlap(apt, other))) {
+          maxCols = i + 1;
+        }
+      }
+      maxColumns.set(apt.id, maxCols);
+    }
+
+    return { columnAssignment, maxColumns };
+  };
+
   // Calculate overlap groups and positions for appointments
   const getAppointmentStyleWithOverlap = (appointment: typeof dayAppointments[number], agentAppointments: typeof dayAppointments[number][]) => {
     const startHour = appointment.startTime.getHours();
@@ -86,40 +129,27 @@ export function DayView() {
     const endHour = appointment.endTime.getHours();
     const endMinute = appointment.endTime.getMinutes();
 
-    // Calculate position in 15-minute increments (15px per 15 minutes)
+    // Calculate position in 15-minute increments (3px per minute)
     const startMinutesFromStart = (startHour - 8) * 60 + startMinute;
     const endMinutesFromStart = (endHour - 8) * 60 + endMinute;
     const durationMinutes = endMinutesFromStart - startMinutesFromStart;
 
-    // Find overlapping appointments for this agent
-    const overlapping = agentAppointments.filter(apt =>
-      apt.id !== appointment.id && appointmentsOverlap(apt, appointment)
-    );
+    // Get column assignments for all appointments for this agent
+    const { columnAssignment, maxColumns } = assignColumns(agentAppointments);
 
-    if (overlapping.length === 0) {
-      return {
-        top: `${startMinutesFromStart}px`,
-        height: `${durationMinutes}px`,
-        left: '0%',
-        width: '100%',
-      };
-    }
+    const column = columnAssignment.get(appointment.id) ?? 0;
+    const totalColumns = maxColumns.get(appointment.id) ?? 1;
 
-    // Calculate position in overlap group
-    const allInGroup = [appointment, ...overlapping].sort((a, b) =>
-      a.startTime.getTime() - b.startTime.getTime()
-    );
-    const position = allInGroup.findIndex(apt => apt.id === appointment.id);
-    const totalInGroup = allInGroup.length;
-
-    const widthPercent = 100 / totalInGroup;
-    const leftPercent = widthPercent * position;
+    // Divide the available width based on the maximum columns needed
+    const widthPercent = 100 / totalColumns;
+    const leftPercent = widthPercent * column;
 
     return {
-      top: `${startMinutesFromStart}px`,
-      height: `${durationMinutes}px`,
+      top: `${startMinutesFromStart * 3}px`,
+      height: `${durationMinutes * 3}px`,
       left: `${leftPercent}%`,
       width: `${widthPercent}%`,
+      zIndex: 1,
     };
   };
 
@@ -153,7 +183,7 @@ export function DayView() {
             <div
               key={slot.index}
               className={cn(
-                'h-[15px] border-t p-1 text-xs text-muted-foreground flex items-center',
+                'h-[45px] border-t p-1 text-xs text-muted-foreground flex items-center',
                 slot.minute === 0 && 'border-t-2 font-medium'
               )}
             >
@@ -237,7 +267,7 @@ export function DayView() {
           <div className="flex">
             {/* Agent Columns */}
           {visibleAgents.map((agent) => (
-            <div key={agent.id} className="flex-1 border-r relative" style={{ minHeight: '600px' }} data-calendar-day>
+            <div key={agent.id} className="flex-1 border-r relative" style={{ minHeight: '1800px' }} data-calendar-day>
               {/* Time Grid Lines with Drop Zones */}
               {timeSlots.map((slot) => {
                 const slotStartTime = setHours(setMinutes(selectedDate, slot.minute), slot.hour);
@@ -246,7 +276,7 @@ export function DayView() {
                     key={slot.index}
                     agentId={agent.id}
                     startTime={slotStartTime}
-                    style={{ top: `${slot.index * 15}px`, height: '15px' }}
+                    style={{ top: `${slot.index * 45}px`, height: '45px' }}
                   />
                 );
               })}
