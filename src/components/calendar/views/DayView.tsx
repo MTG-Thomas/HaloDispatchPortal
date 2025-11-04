@@ -32,7 +32,7 @@ export function DayView() {
     console.log('📅 DayView: Visible agents:', visibleAgents.length, visibleAgents.map(a => a.id));
     loadAppointments(dayStart, dayEnd);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDate.toDateString(), selectedResources]);
+  }, [selectedDate.toDateString(), selectedResources, visibleAgents.length]);
 
   // Get appointments for today
   const dayAppointments = appointments.filter((apt) => {

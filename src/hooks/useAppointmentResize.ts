@@ -16,7 +16,8 @@ interface ResizeState {
 
 export function useAppointmentResize(
   appointment: Appointment,
-  onResizeComplete: (appointmentId: string, newStartTime: Date, newEndTime: Date) => void
+  onResizeComplete: (appointmentId: string, newStartTime: Date, newEndTime: Date) => void,
+  onResizePreview?: (appointmentId: string, newStartTime: Date, newEndTime: Date) => void
 ) {
   const [resizeState, setResizeState] = useState<ResizeState>({
     isResizing: false,
@@ -87,23 +88,39 @@ export function useAppointmentResize(
     if (resizeState.edge === 'top') {
       // Resizing from top - adjust start time
       if (newTime < resizeState.originalEndTime!) {
+        const newStartTime = newTime;
+        const newEndTime = resizeState.originalEndTime!;
+
         setResizeState(prev => ({
           ...prev,
-          previewStartTime: newTime,
-          previewEndTime: prev.originalEndTime,
+          previewStartTime: newStartTime,
+          previewEndTime: newEndTime,
         }));
+
+        // Call preview callback to update store optimistically
+        if (onResizePreview) {
+          onResizePreview(appointment.id, newStartTime, newEndTime);
+        }
       }
     } else {
       // Resizing from bottom - adjust end time
       if (newTime > resizeState.originalStartTime!) {
+        const newStartTime = resizeState.originalStartTime!;
+        const newEndTime = newTime;
+
         setResizeState(prev => ({
           ...prev,
-          previewStartTime: prev.originalStartTime,
-          previewEndTime: newTime,
+          previewStartTime: newStartTime,
+          previewEndTime: newEndTime,
         }));
+
+        // Call preview callback to update store optimistically
+        if (onResizePreview) {
+          onResizePreview(appointment.id, newStartTime, newEndTime);
+        }
       }
     }
-  }, [resizeState, config]);
+  }, [resizeState, config, onResizePreview, appointment.id]);
 
   const handleMouseUp = useCallback(() => {
     if (resizeState.isResizing && resizeState.previewStartTime && resizeState.previewEndTime) {

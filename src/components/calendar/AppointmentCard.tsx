@@ -1,4 +1,5 @@
 import { format } from 'date-fns';
+import { useCallback } from 'react';
 import { Clock, AlertCircle, GripHorizontal, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useDraggableAppointment } from '@/hooks/useDraggableAppointment';
@@ -13,68 +14,29 @@ interface AppointmentCardProps {
 
 export function AppointmentCard({ appointment }: AppointmentCardProps) {
   const { ticket } = appointment;
-  const { resizeAppointment } = useDispatchStore();
+  const { resizeAppointment, appointments } = useDispatchStore();
   const dragRef = useDraggableAppointment(appointment);
 
-  const { startResize, isResizing, previewStartTime, previewEndTime } = useAppointmentResize(
-    appointment,
-    resizeAppointment
+  // Create preview callback that updates the store optimistically
+  const handleResizePreview = useCallback(
+    (id: string, newStartTime: Date, newEndTime: Date) => {
+      // Update store immediately for live preview using Zustand's setState
+      useDispatchStore.setState({
+        appointments: appointments.map(apt =>
+          apt.id === id
+            ? { ...apt, startTime: newStartTime, endTime: newEndTime }
+            : apt
+        ),
+      });
+    },
+    [appointments]
   );
 
-  // Calculate preview dimensions when resizing
-  const getPreviewStyle = () => {
-    if (!isResizing) return {};
-
-    // Import config to calculate grid positioning
-    const config = { dayStartHour: 8, dayEndHour: 17, slotIncrement: 15 };
-    const slotHeight = 48; // Must match CalendarColumn
-    const spacing = 1; // Must match CalendarColumn spacing
-
-    // Calculate grid rows for preview times
-    const getGridRow = (time: Date) => {
-      const totalMinutesFromMidnight = time.getHours() * 60 + time.getMinutes();
-      const startMinutes = config.dayStartHour * 60;
-      const minutesFromStart = totalMinutesFromMidnight - startMinutes;
-      const slotIndex = Math.floor(minutesFromStart / config.slotIncrement);
-      return slotIndex + 1; // CSS Grid is 1-indexed
-    };
-
-    // Calculate sub-slot offset (0-1 fraction within the slot)
-    const getSubSlotOffset = (time: Date) => {
-      const totalMinutesFromMidnight = time.getHours() * 60 + time.getMinutes();
-      const startMinutes = config.dayStartHour * 60;
-      const minutesFromStart = totalMinutesFromMidnight - startMinutes;
-      const slotIndex = Math.floor(minutesFromStart / config.slotIncrement);
-      const slotStartMinutes = slotIndex * config.slotIncrement;
-      const offsetWithinSlot = minutesFromStart - slotStartMinutes;
-      return offsetWithinSlot / config.slotIncrement;
-    };
-
-    // Calculate preview position
-    const previewStartRow = getGridRow(previewStartTime);
-    const previewEndRow = getGridRow(previewEndTime);
-    const previewStartOffset = getSubSlotOffset(previewStartTime);
-    const previewEndOffset = getSubSlotOffset(previewEndTime);
-
-    const previewTopPx = (previewStartRow - 1) * slotHeight + previewStartOffset * slotHeight;
-    const previewBottomPx = (previewEndRow - 1) * slotHeight + previewEndOffset * slotHeight;
-    const previewHeightPx = previewBottomPx - previewTopPx;
-
-    // Calculate current position
-    const currentStartRow = getGridRow(appointment.startTime);
-    const currentStartOffset = getSubSlotOffset(appointment.startTime);
-    const currentTopPx = (currentStartRow - 1) * slotHeight + currentStartOffset * slotHeight;
-
-    // Calculate the delta to translate the card to preview position
-    const deltaY = previewTopPx - currentTopPx;
-
-    // Use transform to move the card and update height
-    // This keeps the card in its positioned context but visually moves it
-    return {
-      transform: `translateY(${deltaY}px)`,
-      height: `${previewHeightPx - spacing * 2}px`,
-    };
-  };
+  const { startResize, isResizing } = useAppointmentResize(
+    appointment,
+    resizeAppointment,
+    handleResizePreview
+  );
 
   const getStatusIcon = () => {
     switch (appointment.status) {
@@ -103,7 +65,6 @@ export function AppointmentCard({ appointment }: AppointmentCardProps) {
           isCompleted && 'opacity-60'
         )}
         style={{
-          ...(isResizing ? getPreviewStyle() : undefined),
           backgroundColor: appointment.colour || undefined,
           borderLeftColor: appointment.colour ? `color-mix(in srgb, ${appointment.colour} 60%, white)` : undefined,
         }}
@@ -142,8 +103,8 @@ export function AppointmentCard({ appointment }: AppointmentCardProps) {
         </div>
       )}
       <div className="text-[10px] opacity-75 mt-1">
-        {format(previewStartTime, 'h:mm a')} -{' '}
-        {format(previewEndTime, 'h:mm a')}
+        {format(appointment.startTime, 'h:mm a')} -{' '}
+        {format(appointment.endTime, 'h:mm a')}
         {isResizing && <span className="ml-1 opacity-60">(resizing)</span>}
       </div>
 

@@ -45,7 +45,7 @@ export function WeekView() {
     console.log('📅 WeekView: Visible agents:', visibleAgents.length, visibleAgents.map(a => a.id));
     loadAppointments(weekStart, weekEnd);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weekStart.getTime(), weekEnd.getTime(), selectedResources]);
+  }, [weekStart.getTime(), weekEnd.getTime(), selectedResources, visibleAgents.length]);
 
   // Helper to get appointments for a specific agent and day
   const getAppointmentsForAgentAndDay = (agentId: string, day: Date) => {

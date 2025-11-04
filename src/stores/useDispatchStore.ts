@@ -242,14 +242,26 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
     })),
 
   resizeAppointment: async (id, newStartTime, newEndTime) => {
-    try {
-      // Get the current state to determine which field changed
-      const currentState = get();
-      const appointment = currentState.appointments.find(apt => apt.id === id);
-      if (!appointment) {
-        throw new Error('Appointment not found');
-      }
+    const currentState = get();
+    const appointment = currentState.appointments.find(apt => apt.id === id);
+    if (!appointment) {
+      throw new Error('Appointment not found');
+    }
 
+    // Store original times for rollback
+    const originalStartTime = appointment.startTime;
+    const originalEndTime = appointment.endTime;
+
+    // Optimistically update the store immediately
+    set({
+      appointments: currentState.appointments.map(apt =>
+        apt.id === id
+          ? { ...apt, startTime: newStartTime, endTime: newEndTime }
+          : apt
+      ),
+    });
+
+    try {
       // Strip "apt-" prefix to get the actual Halo appointment ID
       const haloAppointmentId = parseInt(id.replace(/^apt-/, ''));
 
@@ -259,45 +271,30 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
       };
 
       // Check if start time changed
-      if (appointment.startTime.getTime() !== newStartTime.getTime()) {
+      if (originalStartTime.getTime() !== newStartTime.getTime()) {
         update.start_date = newStartTime.toISOString();
       }
 
       // Check if end time changed
-      if (appointment.endTime.getTime() !== newEndTime.getTime()) {
+      if (originalEndTime.getTime() !== newEndTime.getTime()) {
         update.end_date = newEndTime.toISOString();
       }
 
       // Call the API
       await apiCreateOrUpdateAppointment(update);
 
-      // Refresh appointments to show the updated times
-      const { calendarView, selectedDate, loadAppointments } = currentState;
-      let startDate: Date;
-      let endDate: Date;
-
-      switch (calendarView) {
-        case 'day':
-          startDate = selectedDate;
-          endDate = selectedDate;
-          break;
-        case 'week5':
-        case 'week7': {
-          const { startOfWeek, endOfWeek } = await import('date-fns');
-          startDate = startOfWeek(selectedDate, { weekStartsOn: 1 });
-          endDate = endOfWeek(selectedDate, { weekStartsOn: 1 });
-          break;
-        }
-        case 'month': {
-          const { startOfMonth, endOfMonth } = await import('date-fns');
-          startDate = startOfMonth(selectedDate);
-          endDate = endOfMonth(selectedDate);
-          break;
-        }
-      }
-
-      await loadAppointments(startDate, endDate);
+      // Success - optimistic update is already applied, no need to refresh
     } catch (error) {
+      // Rollback optimistic update on failure
+      const state = get();
+      set({
+        appointments: state.appointments.map(apt =>
+          apt.id === id
+            ? { ...apt, startTime: originalStartTime, endTime: originalEndTime }
+            : apt
+        ),
+      });
+
       const { toast } = await import('sonner');
       console.error('Failed to resize appointment:', error);
       toast.error('Failed to resize appointment', {
