@@ -1,0 +1,98 @@
+[
+    {
+        "id": 11,
+        "guid": "907f5dfd-3385-4bf2-b14b-5e0131faf5db",
+        "name": "*Unassigned",
+        "agent_id": 0,
+        "team_id": 0,
+        "type": 101
+    },
+    {
+        "id": 3,
+        "guid": "869105e3-c7d7-4a2d-a134-96ba24c77bfc",
+        "name": "Closed Tickets",
+        "agent_id": 0,
+        "team_id": 0,
+        "type": 0,
+        "type_name": "Tickets",
+        "sys_id": "tickets-closed"
+    },
+    {
+        "id": 19,
+        "guid": "d91b713a-5bb3-4aa6-93fb-84c18bb12171",
+        "name": "Dashboard - Assigned without progress",
+        "agent_id": 0,
+        "team_id": 0,
+        "type": 101
+    },
+    {
+        "id": 12,
+        "guid": "d097d3ec-73ad-4a18-9d07-ac0a9519b6b6",
+        "name": "Dashboard - Needs Attention",
+        "agent_id": 0,
+        "team_id": 0,
+        "type": 101
+    },
+    {
+        "id": 14,
+        "guid": "60118d6f-a5fb-46e6-b1b6-683d32071882",
+        "name": "Dashboard - Not Updated Recently",
+        "agent_id": 0,
+        "team_id": 0,
+        "type": 101
+    },
+    {
+        "id": 17,
+        "guid": "5a18a2bf-6df7-4fdf-b8a5-26595245f186",
+        "name": "Dashboard - On Hold more than a week",
+        "agent_id": 0,
+        "team_id": 0,
+        "type": 101
+    },
+    {
+        "id": 21,
+        "guid": "58113e5e-d6a2-4bc2-9248-433b12291fac",
+        "name": "Dashboard - Service tickets with no progress",
+        "agent_id": 0,
+        "team_id": 0,
+        "type": 101
+    },
+    {
+        "id": 13,
+        "guid": "ce3947a7-f590-49ed-9301-9596d549beb3",
+        "name": "Dashboard - SLA Hold",
+        "agent_id": 0,
+        "team_id": 0,
+        "type": 101
+    },
+    {
+        "id": 1,
+        "guid": "a6c7e21d-572e-45eb-8546-83ed886b7570",
+        "name": "Open Tickets",
+        "agent_id": 0,
+        "team_id": 0,
+        "type": 0,
+        "type_name": "Tickets",
+        "sys_id": "tickets-open"
+    },
+    {
+        "id": 2,
+        "guid": "a3460959-5785-46a6-ad18-526d8e24b9fb",
+        "name": "Open Tickets (Including SLA Hold)",
+        "agent_id": 0,
+        "team_id": 0,
+        "type": 0,
+        "type_name": "Tickets",
+        "sys_id": "tickets-openhold"
+    },
+    {
+        "id": 18,
+        "guid": "3b3ff100-8c5a-46c9-bed9-700baf31ccb7",
+        "name": "Open Tickets Excluding Tasks (Including SLA Hold)",
+        "agent_id": 0,
+        "team_id": 0,
+        "type": 0,
+        "type_name": "Tickets",
+        "sys_id": "tickets-openhold"
+    }
+]
