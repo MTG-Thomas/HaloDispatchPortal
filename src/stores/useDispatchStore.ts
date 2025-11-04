@@ -25,6 +25,7 @@ import {
   getUtcOffset,
   getAppointments,
   getAppointmentTypes,
+  createOrUpdateAppointment as apiCreateOrUpdateAppointment,
 } from '@/services/halo-api';
 import { enrichTicket } from '@/utils/enrich-ticket';
 import { usePreferencesStore } from '@/stores/preferencesStore';
@@ -101,7 +102,8 @@ interface DispatchState {
   updateAppointment: (id: string, updates: Partial<Appointment>) => void;
   deleteAppointment: (id: string) => void;
   moveAppointment: (id: string, newStartTime: Date, newAgentId: string) => void;
-  resizeAppointment: (id: string, newStartTime: Date, newEndTime: Date) => void;
+  resizeAppointment: (id: string, newStartTime: Date, newEndTime: Date) => Promise<void>;
+  createOrUpdateAppointment: (appointment: Partial<HaloAppointment> & { id?: number }) => Promise<void>;
 
   // Actions - Tickets
   updateTicket: (id: string, updates: Partial<Ticket>) => void;
@@ -239,19 +241,135 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
       }),
     })),
 
-  resizeAppointment: (id, newStartTime, newEndTime) =>
-    set((state) => ({
-      appointments: state.appointments.map((apt) => {
-        if (apt.id !== id) return apt;
+  resizeAppointment: async (id, newStartTime, newEndTime) => {
+    try {
+      // Get the current state to determine which field changed
+      const currentState = get();
+      const appointment = currentState.appointments.find(apt => apt.id === id);
+      if (!appointment) {
+        throw new Error('Appointment not found');
+      }
 
-        return {
-          ...apt,
-          startTime: newStartTime,
-          endTime: newEndTime,
-          updatedAt: new Date(),
-        };
-      }),
-    })),
+      // Strip "apt-" prefix to get the actual Halo appointment ID
+      const haloAppointmentId = parseInt(id.replace(/^apt-/, ''));
+
+      // Determine which field changed and build partial update
+      const update: Partial<HaloAppointment> & { id: number } = {
+        id: haloAppointmentId,
+      };
+
+      // Check if start time changed
+      if (appointment.startTime.getTime() !== newStartTime.getTime()) {
+        update.start_date = newStartTime.toISOString();
+      }
+
+      // Check if end time changed
+      if (appointment.endTime.getTime() !== newEndTime.getTime()) {
+        update.end_date = newEndTime.toISOString();
+      }
+
+      // Call the API
+      await apiCreateOrUpdateAppointment(update);
+
+      // Refresh appointments to show the updated times
+      const { calendarView, selectedDate, loadAppointments } = currentState;
+      let startDate: Date;
+      let endDate: Date;
+
+      switch (calendarView) {
+        case 'day':
+          startDate = selectedDate;
+          endDate = selectedDate;
+          break;
+        case 'week5':
+        case 'week7': {
+          const { startOfWeek, endOfWeek } = await import('date-fns');
+          startDate = startOfWeek(selectedDate, { weekStartsOn: 1 });
+          endDate = endOfWeek(selectedDate, { weekStartsOn: 1 });
+          break;
+        }
+        case 'month': {
+          const { startOfMonth, endOfMonth } = await import('date-fns');
+          startDate = startOfMonth(selectedDate);
+          endDate = endOfMonth(selectedDate);
+          break;
+        }
+      }
+
+      await loadAppointments(startDate, endDate);
+    } catch (error) {
+      const { toast } = await import('sonner');
+      console.error('Failed to resize appointment:', error);
+      toast.error('Failed to resize appointment', {
+        description: error instanceof Error ? error.message : 'An unknown error occurred',
+      });
+      throw error;
+    }
+  },
+
+  createOrUpdateAppointment: async (appointment) => {
+    try {
+      // Call the API
+      const result = await apiCreateOrUpdateAppointment(appointment);
+
+      // API returns an array with the created/updated appointment
+      if (result && result.length > 0) {
+        const updatedAppointment = result[0];
+
+        // Update the local state
+        set((state) => {
+          const appointmentId = `apt-${updatedAppointment.id}`;
+          const existingIndex = state.appointments.findIndex(apt => apt.id === appointmentId);
+
+          // Convert HaloAppointment to Appointment format
+          const mappedAppointment: Appointment = {
+            id: appointmentId,
+            ticketId: updatedAppointment.ticket_id ? `tkt-${updatedAppointment.ticket_id}` : '',
+            agentId: `agent-${updatedAppointment.agent_id}`,
+            startTime: new Date(updatedAppointment.start_date.endsWith('Z') ? updatedAppointment.start_date : `${updatedAppointment.start_date}Z`),
+            endTime: new Date(updatedAppointment.end_date.endsWith('Z') ? updatedAppointment.end_date : `${updatedAppointment.end_date}Z`),
+            status: updatedAppointment.complete_status === 0 ? 'completed' : 'scheduled',
+            location: updatedAppointment.appointment_location_name,
+            isAllDay: updatedAppointment.allday,
+            isTentative: false,
+            notes: updatedAppointment.note,
+            createdAt: existingIndex >= 0 ? state.appointments[existingIndex].createdAt : new Date(),
+            updatedAt: new Date(),
+            subject: updatedAppointment.subject,
+            colour: updatedAppointment.colour,
+            complete_status: updatedAppointment.complete_status,
+            client_name: updatedAppointment.client_name,
+            site_name: updatedAppointment.site_name,
+            user_name: updatedAppointment.user_name,
+            appointment_type_name: updatedAppointment.appointment_type_name,
+            canUpdate: updatedAppointment._canupdate,
+            canDelete: updatedAppointment._candelete,
+            canComplete: updatedAppointment._cancomplete,
+          };
+
+          if (existingIndex >= 0) {
+            // Update existing appointment
+            const updatedAppointments = [...state.appointments];
+            updatedAppointments[existingIndex] = {
+              ...updatedAppointments[existingIndex],
+              ...mappedAppointment,
+            };
+            return { appointments: updatedAppointments };
+          } else {
+            // Add new appointment
+            return { appointments: [...state.appointments, mappedAppointment] };
+          }
+        });
+      }
+    } catch (error) {
+      const { toast } = await import('sonner');
+      console.error('Failed to create/update appointment:', error);
+      toast.error('Failed to update appointment', {
+        description: error instanceof Error ? error.message : 'An unknown error occurred',
+      });
+      throw error;
+    }
+  },
 
   // Ticket Actions
   updateTicket: (id, updates) =>

@@ -200,12 +200,9 @@ export function DayView() {
     const widthPercent = 100 / totalColumns;
     const leftPercent = widthPercent * column;
 
-    // Extend height by 2px to create slight visual overlap with next appointment
-    const heightWithOverlap = durationMinutes * 3 + 2;
-
     return {
       top: `${startMinutesFromStart * 3}px`,
-      height: `${heightWithOverlap}px`,
+      height: `${durationMinutes * 3}px`,
       left: `${leftPercent}%`,
       width: `${widthPercent}%`,
       zIndex: column + 1, // Higher z-index for appointments in later columns
@@ -229,24 +226,37 @@ export function DayView() {
         </div>
         <div className="h-full">
           {/* Placeholder for scroll alignment */}
-          <div className="h-[40px]" /> {/* All Day header */}
-          {allDayAppointments.length > 0 && <div className="h-[40px]" />} {/* All Day content */}
+          <div className="h-[40px]" /> {/* Header row spacer */}
+
+          {/* All Day Section Label */}
+          <div className="h-[40px] border-b flex items-center px-2 text-xs text-muted-foreground bg-muted/10">
+            All Day
+          </div>
+
+          {/* Before Hours Section Label */}
           {beforeHoursAppointments.length > 0 && (
             <>
-              <div className="h-[24px]" /> {/* Before Hours header */}
-              <div className="h-[40px]" /> {/* Before Hours content */}
+              <div className="h-[24px] border-b flex items-center px-2 text-xs text-muted-foreground bg-orange-50 dark:bg-orange-950/20">
+                Before 8 AM
+              </div>
+              <div className="h-[40px]" /> {/* Before Hours content spacer */}
             </>
           )}
-          {/* Time labels */}
+
+          {/* Time labels start here */}
           {timeSlots.map((slot) => (
             <div
               key={slot.index}
               className={cn(
-                'h-[45px] border-t p-1 text-xs text-muted-foreground flex items-center',
+                'h-[45px] border-t text-xs text-muted-foreground relative',
                 slot.minute === 0 && 'border-t-2 font-medium'
               )}
             >
-              {slot.minute === 0 && format(setHours(setMinutes(selectedDate, 0), slot.hour), 'h a')}
+              {slot.minute === 0 && (
+                <span className="absolute -top-2 left-1">
+                  {format(setHours(setMinutes(selectedDate, 0), slot.hour), 'h a')}
+                </span>
+              )}
             </div>
           ))}
           {afterHoursAppointments.length > 0 && (
@@ -279,34 +289,32 @@ export function DayView() {
             </div>
           </div>
 
-          {/* All-Day Appointments Section */}
-          {allDayAppointments.length > 0 && (
-            <div className="border-b bg-muted/10">
-              <div className="flex">
-                {visibleAgents.map((agent) => (
-                  <div key={agent.id} className="flex-1 border-r p-1 min-h-[40px]">
-                    {getAllDayAppointmentsForAgent(agent.id).map((appointment) => (
-                      <div key={appointment.id} className="mb-1">
-                        <div className="text-xs px-2 py-1 rounded truncate" style={{ backgroundColor: appointment.colour || '#6366f1' }}>
-                          <span className="text-gray-900 font-medium">{appointment.subject}</span>
-                        </div>
+          {/* All-Day Appointments Section - Always render with fixed height for alignment */}
+          <div className="border-b bg-muted/10 h-[40px] overflow-hidden">
+            <div className="flex h-full">
+              {visibleAgents.map((agent) => (
+                <div key={agent.id} className="flex-1 border-r p-1 overflow-y-auto">
+                  {getAllDayAppointmentsForAgent(agent.id).map((appointment) => (
+                    <div key={appointment.id} className="mb-1">
+                      <div className="text-xs px-2 py-1 rounded truncate" style={{ backgroundColor: appointment.colour || '#6366f1' }}>
+                        <span className="text-gray-900 font-medium">{appointment.subject}</span>
                       </div>
-                    ))}
-                  </div>
-                ))}
-              </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
             </div>
-          )}
+          </div>
 
-          {/* Before Hours Appointments Section */}
+          {/* Before Hours Appointments Section - Fixed height for alignment */}
           {beforeHoursAppointments.length > 0 && (
             <div className="border-b bg-orange-50 dark:bg-orange-950/20">
-              <div className="px-2 py-1 text-xs text-muted-foreground font-medium">
+              <div className="px-2 py-1 text-xs text-muted-foreground font-medium h-[24px] flex items-center">
                 Before 8 AM
               </div>
-              <div className="flex max-h-[100px] overflow-y-auto">
+              <div className="flex h-[40px] overflow-hidden">
                 {visibleAgents.map((agent) => (
-                  <div key={agent.id} className="flex-1 border-r p-1 min-h-[40px]">
+                  <div key={agent.id} className="flex-1 border-r p-1 overflow-y-auto">
                     {getBeforeHoursAppointmentsForAgent(agent.id).map((appointment) => (
                       <div key={appointment.id} className="mb-1">
                         <div className="text-xs px-2 py-1 rounded truncate" style={{ backgroundColor: appointment.colour || '#6366f1' }}>
@@ -362,15 +370,15 @@ export function DayView() {
           ))}
           </div>
 
-          {/* After Hours Appointments Section */}
+          {/* After Hours Appointments Section - Fixed height for alignment */}
           {afterHoursAppointments.length > 0 && (
             <div className="border-t bg-orange-50 dark:bg-orange-950/20">
-              <div className="px-2 py-1 text-xs text-muted-foreground font-medium">
+              <div className="px-2 py-1 text-xs text-muted-foreground font-medium h-[24px] flex items-center">
                 After 5 PM
               </div>
-              <div className="flex max-h-[100px] overflow-y-auto">
+              <div className="flex h-[40px] overflow-hidden">
                 {visibleAgents.map((agent) => (
-                  <div key={agent.id} className="flex-1 border-r p-1 min-h-[40px]">
+                  <div key={agent.id} className="flex-1 border-r p-1 overflow-y-auto">
                     {getAfterHoursAppointmentsForAgent(agent.id).map((appointment) => (
                       <div key={appointment.id} className="mb-1">
                         <div className="text-xs px-2 py-1 rounded truncate" style={{ backgroundColor: appointment.colour || '#6366f1' }}>

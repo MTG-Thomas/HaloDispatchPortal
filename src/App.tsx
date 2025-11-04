@@ -4,6 +4,7 @@ import { AuthProvider } from './contexts/AuthContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { DispatchView } from './components/DispatchView';
 import { ApiErrorPage } from './components/ApiErrorPage';
+import { Toaster } from '@/components/ui/sonner';
 import Login from './pages/Login';
 import AuthCallback from './pages/AuthCallback';
 
@@ -27,6 +28,9 @@ function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/auth/callback" element={<AuthCallback />} />
           </Routes>
+
+          {/* Toast notifications */}
+          <Toaster />
         </AuthProvider>
       </ThemeProvider>
     </BrowserRouter>

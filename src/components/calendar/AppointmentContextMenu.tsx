@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -8,9 +9,11 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu';
+import { CompletionDialog } from '@/components/calendar/CompletionDialog';
 import { useDispatchStore } from '@/stores/useDispatchStore';
 import { useConfigStore } from '@/stores/configStore';
 import { CheckCircle, XCircle, Clock, Edit, Trash2, Play } from 'lucide-react';
+import { startOfWeek, endOfWeek, startOfMonth, endOfMonth } from 'date-fns';
 import type { Appointment, AppointmentStatus } from '@/types';
 
 interface AppointmentContextMenuProps {
@@ -19,8 +22,9 @@ interface AppointmentContextMenuProps {
 }
 
 export function AppointmentContextMenu({ appointment, children }: AppointmentContextMenuProps) {
-  const { updateAppointment, deleteAppointment, updateTicket } = useDispatchStore();
+  const { updateAppointment, deleteAppointment, updateTicket, createOrUpdateAppointment, calendarView, selectedDate, loadAppointments } = useDispatchStore();
   const { config } = useConfigStore();
+  const [isCompletionDialogOpen, setIsCompletionDialogOpen] = useState(false);
 
   const handleStatusChange = (status: AppointmentStatus) => {
     updateAppointment(appointment.id, { status });
@@ -56,6 +60,55 @@ export function AppointmentContextMenu({ appointment, children }: AppointmentCon
     );
   };
 
+  const handleMarkDone = () => {
+    setIsCompletionDialogOpen(true);
+  };
+
+  const handleComplete = async (noteHtml: string, timeTaken: number) => {
+    // Strip "apt-" prefix to get the actual Halo appointment ID
+    const haloAppointmentId = parseInt(appointment.id.replace(/^apt-/, ''));
+
+    // Wrap the note in HTML paragraph tags
+    const formattedNote = noteHtml.trim() ? `<p>${noteHtml}</p>` : '';
+
+    // Send partial appointment update to Halo API
+    await createOrUpdateAppointment({
+      id: haloAppointmentId,
+      complete_status: 0, // 0 = completed
+      complete_notehtml: formattedNote,
+      complete_timetaken: timeTaken,
+    });
+
+    // Also update the ticket status to resolved
+    if (appointment.ticketId) {
+      updateTicket(appointment.ticketId, { status: 'resolved' });
+    }
+
+    // Refresh appointments to show the updated status
+    let startDate: Date;
+    let endDate: Date;
+
+    switch (calendarView) {
+      case 'day':
+        startDate = selectedDate;
+        endDate = selectedDate;
+        break;
+      case 'week5':
+      case 'week7': {
+        startDate = startOfWeek(selectedDate, { weekStartsOn: 1 });
+        endDate = endOfWeek(selectedDate, { weekStartsOn: 1 });
+        break;
+      }
+      case 'month': {
+        startDate = startOfMonth(selectedDate);
+        endDate = endOfMonth(selectedDate);
+        break;
+      }
+    }
+
+    await loadAppointments(startDate, endDate);
+  };
+
   const getStatusIcon = (status: AppointmentStatus) => {
     switch (status) {
       case 'scheduled':
@@ -77,62 +130,72 @@ export function AppointmentContextMenu({ appointment, children }: AppointmentCon
   };
 
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        {children}
-      </ContextMenuTrigger>
-      <ContextMenuContent className="w-64">
-        <ContextMenuItem onClick={handleEdit}>
-          <Edit className="h-4 w-4 mr-2" />
-          Edit Appointment
-        </ContextMenuItem>
+    <>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          {children}
+        </ContextMenuTrigger>
+        <ContextMenuContent className="w-64">
+          <ContextMenuItem onClick={handleEdit}>
+            <Edit className="h-4 w-4 mr-2" />
+            Edit Appointment
+          </ContextMenuItem>
 
-        <ContextMenuSeparator />
+          <ContextMenuSeparator />
 
-        <ContextMenuSub>
-          <ContextMenuSubTrigger>
-            <Clock className="h-4 w-4 mr-2" />
-            Change Status
-          </ContextMenuSubTrigger>
-          <ContextMenuSubContent>
-            {Object.entries(statusLabels).map(([status, label]) => (
-              <ContextMenuItem
-                key={status}
-                onClick={() => handleStatusChange(status as AppointmentStatus)}
-                disabled={appointment.status === status}
-              >
-                {getStatusIcon(status as AppointmentStatus)}
-                <span className="ml-2">{label}</span>
-              </ContextMenuItem>
-            ))}
-          </ContextMenuSubContent>
-        </ContextMenuSub>
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>
+              <Clock className="h-4 w-4 mr-2" />
+              Change Status
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              {Object.entries(statusLabels).map(([status, label]) => (
+                <ContextMenuItem
+                  key={status}
+                  onClick={() => handleStatusChange(status as AppointmentStatus)}
+                  disabled={appointment.status === status}
+                >
+                  {getStatusIcon(status as AppointmentStatus)}
+                  <span className="ml-2">{label}</span>
+                </ContextMenuItem>
+              ))}
+            </ContextMenuSubContent>
+          </ContextMenuSub>
 
-        <ContextMenuSeparator />
+          <ContextMenuSeparator />
 
-        <ContextMenuItem
-          onClick={() => handleStatusChange('in_progress')}
-          disabled={appointment.status === 'in_progress'}
-        >
-          <Play className="h-4 w-4 mr-2" />
-          Start Work
-        </ContextMenuItem>
+          <ContextMenuItem
+            onClick={() => handleStatusChange('in_progress')}
+            disabled={appointment.status === 'in_progress'}
+          >
+            <Play className="h-4 w-4 mr-2" />
+            Start Work
+          </ContextMenuItem>
 
-        <ContextMenuItem
-          onClick={() => handleStatusChange('completed')}
-          disabled={appointment.status === 'completed'}
-        >
-          <CheckCircle className="h-4 w-4 mr-2" />
-          Mark Complete
-        </ContextMenuItem>
+          <ContextMenuItem
+            onClick={handleMarkDone}
+            disabled={appointment.status === 'completed'}
+          >
+            <CheckCircle className="h-4 w-4 mr-2" />
+            Mark Done
+          </ContextMenuItem>
 
-        <ContextMenuSeparator />
+          <ContextMenuSeparator />
 
-        <ContextMenuItem onClick={handleDelete} className="text-destructive">
-          <Trash2 className="h-4 w-4 mr-2" />
-          Delete Appointment
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+          <ContextMenuItem onClick={handleDelete} className="text-destructive">
+            <Trash2 className="h-4 w-4 mr-2" />
+            Delete Appointment
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+
+      {/* Completion Dialog */}
+      <CompletionDialog
+        appointment={appointment}
+        open={isCompletionDialogOpen}
+        onOpenChange={setIsCompletionDialogOpen}
+        onComplete={handleComplete}
+      />
+    </>
   );
 }

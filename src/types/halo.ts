@@ -349,6 +349,8 @@ export interface HaloAppointment {
   colour: string;
   subject: string;
   complete_status: number;
+  complete_notehtml?: string;
+  complete_timetaken?: number;
   _canupdate: boolean;
   _cancomplete: boolean;
   _candelete: boolean;

@@ -30,16 +30,16 @@ export function AppointmentCard({ appointment }: AppointmentCardProps) {
     const previewStartMinutes = previewStartTime.getHours() * 60 + previewStartTime.getMinutes();
     const previewEndMinutes = previewEndTime.getHours() * 60 + previewEndTime.getMinutes();
 
-    // Calculate offset from original position (in pixels)
-    const topOffset = ((previewStartMinutes - originalStartMinutes) / 60) * 60;
-    const durationHours = (previewEndMinutes - previewStartMinutes) / 60;
+    // Calculate offset from original position (in pixels) - 3px per minute
+    const topOffset = (previewStartMinutes - originalStartMinutes) * 3;
+    const durationMinutes = previewEndMinutes - previewStartMinutes;
 
     return {
       position: 'absolute' as const,
       top: `${topOffset}px`,
       left: 0,
       right: 0,
-      height: `${durationHours * 60}px`,
+      height: `${durationMinutes * 3}px`,
     };
   };
 

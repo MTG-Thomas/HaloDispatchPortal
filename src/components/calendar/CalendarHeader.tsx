@@ -1,5 +1,5 @@
-import { format, addDays, subDays, startOfWeek, endOfWeek, addWeeks, subWeeks, addMonths, subMonths } from 'date-fns';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Moon, Sun, LogOut } from 'lucide-react';
+import { format, addDays, subDays, startOfWeek, endOfWeek, addWeeks, subWeeks, addMonths, subMonths, startOfMonth, endOfMonth } from 'date-fns';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Moon, Sun, LogOut, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useDispatchStore } from '@/stores/useDispatchStore';
@@ -8,10 +8,11 @@ import { useAuth } from '@/contexts/AuthContext';
 import { TicketAreaSelector } from '@/components/halo/TicketAreaSelector';
 import { ListCombobox } from '@/components/halo/ListCombobox';
 import { AgentTeamCombobox } from './AgentTeamCombobox';
+import { cn } from '@/lib/utils';
 import type { CalendarView } from '@/types';
 
 export function CalendarHeader() {
-  const { calendarView, selectedDate, setCalendarView, setSelectedDate, selectedTicketAreaId } = useDispatchStore();
+  const { calendarView, selectedDate, setCalendarView, setSelectedDate, selectedTicketAreaId, appointmentsLoading, loadAppointments } = useDispatchStore();
   const { theme, toggleTheme } = useTheme();
   const { logout } = useAuth();
 
@@ -62,6 +63,34 @@ export function CalendarHeader() {
       case 'month':
         return format(selectedDate, 'MMMM yyyy');
     }
+  };
+
+  const handleRefreshAppointments = async () => {
+    if (appointmentsLoading) return;
+
+    // Calculate date range based on current view
+    let startDate: Date;
+    let endDate: Date;
+
+    switch (calendarView) {
+      case 'day':
+        startDate = selectedDate;
+        endDate = selectedDate;
+        break;
+      case 'week5':
+      case 'week7': {
+        startDate = startOfWeek(selectedDate, { weekStartsOn: 1 });
+        endDate = endOfWeek(selectedDate, { weekStartsOn: 1 });
+        break;
+      }
+      case 'month': {
+        startDate = startOfMonth(selectedDate);
+        endDate = endOfMonth(selectedDate);
+        break;
+      }
+    }
+
+    await loadAppointments(startDate, endDate);
   };
 
   return (
@@ -146,6 +175,17 @@ export function CalendarHeader() {
         )}
         <div className="h-6 w-px bg-border" />
         <AgentTeamCombobox />
+        <div className="flex-1" />
+        <Button
+          variant="outline"
+          size="icon"
+          onClick={handleRefreshAppointments}
+          disabled={appointmentsLoading}
+          className="h-8 w-8"
+          title="Refresh appointments"
+        >
+          <RefreshCw className={cn('h-3.5 w-3.5', appointmentsLoading && 'animate-spin')} />
+        </Button>
       </div>
     </div>
   );

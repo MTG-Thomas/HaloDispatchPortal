@@ -1,4 +1,4 @@
-import { get } from '@/lib/api-client';
+import { get, post } from '@/lib/api-client';
 import type {
   ClientCache,
   ViewList,
@@ -228,4 +228,18 @@ export async function getAppointments(
   };
 
   return get<HaloAppointment[]>('/api/Appointment', params);
+}
+
+/**
+ * Create or Update Appointment - Create a new appointment or update an existing one
+ * Halo requires appointments to be sent as an array even for single operations
+ *
+ * @param appointment - Partial appointment data (can be a completion update or full appointment)
+ * @returns Array with the created/updated appointment
+ */
+export async function createOrUpdateAppointment(
+  appointment: Partial<HaloAppointment> & { id?: number }
+): Promise<HaloAppointment[]> {
+  // Halo API requires appointments to be sent as an array
+  return post<HaloAppointment[]>('/api/appointment', [appointment]);
 }

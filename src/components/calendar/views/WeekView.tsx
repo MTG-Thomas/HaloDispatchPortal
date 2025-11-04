@@ -186,33 +186,9 @@ export function WeekView() {
           other.id !== apt.id && appointmentsOverlapOnDay(apt, other, day)
         );
 
-        // Debug logging for specific appointment (handle both string and number)
-        if (apt.id === 'apt-125027' || apt.id === '125027' || apt.id === 125027) {
-          console.log(`🔍 DEBUG Appointment ${apt.id} "${apt.subject}":`, {
-            id: apt.id,
-            idType: typeof apt.id,
-            startTime: apt.startTime.toLocaleString(),
-            endTime: apt.endTime.toLocaleString(),
-            myColumn,
-            overlappingCount: overlapping.length,
-            overlapping: overlapping.map(o => ({
-              id: o.id,
-              subject: o.subject?.substring(0, 30),
-              start: o.startTime.toLocaleString(),
-              end: o.endTime.toLocaleString(),
-              overlapCheck: {
-                result: appointmentsOverlapOnDay(apt, o, day)
-              }
-            }))
-          });
-        }
-
         if (overlapping.length === 0) {
           // No overlaps - full width
           layoutMap.set(apt.id, { column: 0, totalColumns: 1 });
-          if (apt.id === 'apt-125027' || apt.id === '125027' || apt.id === 125027) {
-            console.log(`  ✅ ${apt.id}: Full width (no overlaps)`);
-          }
         } else {
           // Find max column among overlapping appointments
           let maxColumn = myColumn;
@@ -225,10 +201,6 @@ export function WeekView() {
             column: myColumn,
             totalColumns: maxColumn + 1,
           });
-
-          if (apt.id === 'apt-125027' || apt.id === '125027' || apt.id === 125027) {
-            console.log(`  📏 ${apt.id}: Width ${(100 / (maxColumn + 1)).toFixed(1)}% (column ${myColumn} of ${maxColumn + 1})`);
-          }
         }
       }
 
@@ -266,12 +238,9 @@ export function WeekView() {
     const widthPercent = 100 / totalColumns;
     const leftPercent = widthPercent * column;
 
-    // Extend height by 2px to create slight visual overlap with next appointment
-    const heightWithOverlap = durationMinutes * 3 + 2;
-
     return {
       top: `${startMinutesFromStart * 3}px`,
-      height: `${heightWithOverlap}px`,
+      height: `${durationMinutes * 3}px`,
       left: `${leftPercent}%`,
       width: `${widthPercent}%`,
       zIndex: column + 1, // Higher z-index for appointments in later columns
@@ -334,20 +303,50 @@ export function WeekView() {
             {/* Agent Schedule Row */}
             <div className="flex">
               {/* Time labels column */}
-              <div className="w-48 border-r bg-muted/10 relative" style={{ minHeight: '1800px' }}>
-                {timeSlots.map((slot) => (
-                  <div
-                    key={slot.index}
-                    className="absolute text-right pr-2"
-                    style={{ top: `${slot.index * 45}px`, height: '45px', right: 0, left: 0 }}
-                  >
-                    {slot.minute === 0 && (
-                      <span className="text-[10px] text-muted-foreground/70">
-                        {format(setHours(setMinutes(new Date(), slot.minute), slot.hour), 'h a')}
-                      </span>
-                    )}
-                  </div>
-                ))}
+              <div className="w-48 border-r bg-muted/10">
+                {/* All Day Section Label */}
+                <div className="h-[40px] border-b flex items-center px-2 text-xs text-muted-foreground bg-muted/10">
+                  All Day
+                </div>
+
+                {/* Before Hours Section Label - check if any day has before hours appointments */}
+                {days.some(day => getBeforeHoursAppointmentsForAgentAndDay(agent.id, day).length > 0) && (
+                  <>
+                    <div className="h-[16px] border-b flex items-center px-2 text-[10px] text-muted-foreground bg-orange-50 dark:bg-orange-950/20">
+                      Before 8 AM
+                    </div>
+                    <div className="h-[48px] border-b" /> {/* Before Hours content spacer */}
+                  </>
+                )}
+
+                {/* Time labels for regular hours */}
+                <div className="relative" style={{ minHeight: '1800px' }}>
+                  {timeSlots.map((slot) => (
+                    <div
+                      key={slot.index}
+                      className={cn(
+                        'h-[45px] border-t text-xs text-muted-foreground relative',
+                        slot.minute === 0 && 'border-t-2 font-medium'
+                      )}
+                    >
+                      {slot.minute === 0 && (
+                        <span className="absolute -top-2 right-2">
+                          {format(setHours(setMinutes(new Date(), slot.minute), slot.hour), 'h a')}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {/* After Hours Section Label - check if any day has after hours appointments */}
+                {days.some(day => getAfterHoursAppointmentsForAgentAndDay(agent.id, day).length > 0) && (
+                  <>
+                    <div className="h-[16px] border-t flex items-center px-2 text-[10px] text-muted-foreground bg-orange-50 dark:bg-orange-950/20">
+                      After 5 PM
+                    </div>
+                    <div className="h-[48px]" /> {/* After Hours content spacer */}
+                  </>
+                )}
               </div>
 
               {/* Day Columns - each contains all sections vertically */}
@@ -364,32 +363,32 @@ export function WeekView() {
                       isSameDay(day, new Date()) && 'bg-primary/5'
                     )}
                   >
-                    {/* All-Day Section */}
-                    {dayAllDay.length > 0 && (
-                      <div className="border-b bg-muted/10 p-1 min-h-[40px]">
-                        {dayAllDay.map((appointment) => (
-                          <div key={appointment.id} className="mb-1">
-                            <div className="text-xs px-2 py-1 rounded truncate" style={{ backgroundColor: appointment.colour || '#6366f1' }}>
-                              <span className="text-gray-900 font-medium">{appointment.subject}</span>
-                            </div>
+                    {/* All-Day Section - Always render with fixed height for alignment */}
+                    <div className="border-b bg-muted/10 p-1 h-[40px] overflow-hidden">
+                      {dayAllDay.map((appointment) => (
+                        <div key={appointment.id} className="mb-1">
+                          <div className="text-xs px-2 py-1 rounded truncate" style={{ backgroundColor: appointment.colour || '#6366f1' }}>
+                            <span className="text-gray-900 font-medium">{appointment.subject}</span>
                           </div>
-                        ))}
-                      </div>
-                    )}
+                        </div>
+                      ))}
+                    </div>
 
-                    {/* Before Hours Section */}
+                    {/* Before Hours Section - Fixed height for alignment */}
                     {dayBefore.length > 0 && (
-                      <div className="border-b bg-orange-50 dark:bg-orange-950/20 p-1 min-h-[40px] max-h-[100px] overflow-y-auto">
-                        <div className="text-[10px] text-muted-foreground mb-1">Before 8 AM</div>
-                        {dayBefore.map((appointment) => (
-                          <div key={appointment.id} className="mb-1">
-                            <div className="text-xs px-2 py-1 rounded truncate" style={{ backgroundColor: appointment.colour || '#6366f1' }}>
-                              <span className="text-gray-900 font-medium">
-                                {format(appointment.startTime, 'h:mm a')} - {appointment.subject}
-                              </span>
+                      <div className="border-b bg-orange-50 dark:bg-orange-950/20">
+                        <div className="text-[10px] text-muted-foreground mb-1 h-[16px] flex items-center px-1">Before 8 AM</div>
+                        <div className="h-[48px] overflow-hidden p-1">
+                          {dayBefore.map((appointment) => (
+                            <div key={appointment.id} className="mb-1">
+                              <div className="text-xs px-2 py-1 rounded truncate" style={{ backgroundColor: appointment.colour || '#6366f1' }}>
+                                <span className="text-gray-900 font-medium">
+                                  {format(appointment.startTime, 'h:mm a')} - {appointment.subject}
+                                </span>
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          ))}
+                        </div>
                       </div>
                     )}
 
@@ -428,19 +427,21 @@ export function WeekView() {
                       </div>
                     </div>
 
-                    {/* After Hours Section */}
+                    {/* After Hours Section - Fixed height for alignment */}
                     {dayAfter.length > 0 && (
-                      <div className="border-t bg-orange-50 dark:bg-orange-950/20 p-1 min-h-[40px] max-h-[100px] overflow-y-auto">
-                        <div className="text-[10px] text-muted-foreground mb-1">After 5 PM</div>
-                        {dayAfter.map((appointment) => (
-                          <div key={appointment.id} className="mb-1">
-                            <div className="text-xs px-2 py-1 rounded truncate" style={{ backgroundColor: appointment.colour || '#6366f1' }}>
-                              <span className="text-gray-900 font-medium">
-                                {format(appointment.startTime, 'h:mm a')} - {appointment.subject}
-                              </span>
+                      <div className="border-t bg-orange-50 dark:bg-orange-950/20">
+                        <div className="text-[10px] text-muted-foreground mb-1 h-[16px] flex items-center px-1">After 5 PM</div>
+                        <div className="h-[48px] overflow-hidden p-1">
+                          {dayAfter.map((appointment) => (
+                            <div key={appointment.id} className="mb-1">
+                              <div className="text-xs px-2 py-1 rounded truncate" style={{ backgroundColor: appointment.colour || '#6366f1' }}>
+                                <span className="text-gray-900 font-medium">
+                                  {format(appointment.startTime, 'h:mm a')} - {appointment.subject}
+                                </span>
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
