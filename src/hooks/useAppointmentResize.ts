@@ -17,7 +17,8 @@ interface ResizeState {
 export function useAppointmentResize(
   appointment: Appointment,
   onResizeComplete: (appointmentId: string, newStartTime: Date, newEndTime: Date) => void,
-  onResizePreview?: (appointmentId: string, newStartTime: Date, newEndTime: Date) => void
+  onResizePreview?: (appointmentId: string, newStartTime: Date, newEndTime: Date) => void,
+  slotHeight: number = 48
 ) {
   const [resizeState, setResizeState] = useState<ResizeState>({
     isResizing: false,
@@ -58,8 +59,7 @@ export function useAppointmentResize(
     const rect = calendarElement.getBoundingClientRect();
     const y = event.clientY - rect.top;
 
-    // Grid uses slotHeight pixels per slot (48px currently)
-    const slotHeight = 48;
+    // Calculate slot index using the actual slot height (accounts for zoom level)
     const slotIndex = Math.floor(y / slotHeight);
 
     // Calculate exact minutes from the slot and position within slot
@@ -120,7 +120,7 @@ export function useAppointmentResize(
         }
       }
     }
-  }, [resizeState, config, onResizePreview, appointment.id]);
+  }, [resizeState, config, onResizePreview, appointment.id, slotHeight]);
 
   const handleMouseUp = useCallback(() => {
     if (resizeState.isResizing && resizeState.previewStartTime && resizeState.previewEndTime) {

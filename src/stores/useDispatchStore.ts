@@ -111,7 +111,7 @@ interface DispatchState {
         id: string,
         newStartTime: Date,
         newAgentId: number
-    ) => void;
+    ) => Promise<void>;
     resizeAppointment: (
         id: string,
         newStartTime: Date,
@@ -251,24 +251,82 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
             appointments: state.appointments.filter((apt) => apt.id !== id),
         })),
 
-    moveAppointment: (id, newStartTime, newAgentId) =>
-        set((state) => ({
-            appointments: state.appointments.map((apt) => {
-                if (apt.id !== id) return apt;
+    moveAppointment: async (id, newStartTime, newAgentId) => {
+        const currentState = get();
+        const appointment = currentState.appointments.find(
+            (apt) => apt.id === id
+        );
+        if (!appointment) {
+            throw new Error("Appointment not found");
+        }
 
-                const duration =
-                    apt.endTime.getTime() - apt.startTime.getTime();
-                const newEndTime = new Date(newStartTime.getTime() + duration);
+        // Store original values for rollback
+        const originalStartTime = appointment.startTime;
+        const originalEndTime = appointment.endTime;
+        const originalAgentId = appointment.agentId;
 
-                return {
-                    ...apt,
-                    startTime: newStartTime,
-                    endTime: newEndTime,
-                    agentId: newAgentId,
-                    updatedAt: new Date(),
-                };
-            }),
-        })),
+        // Calculate new end time (preserve duration)
+        const duration = appointment.endTime.getTime() - appointment.startTime.getTime();
+        const newEndTime = new Date(newStartTime.getTime() + duration);
+
+        // Optimistically update the store immediately
+        set({
+            appointments: currentState.appointments.map((apt) =>
+                apt.id === id
+                    ? {
+                          ...apt,
+                          startTime: newStartTime,
+                          endTime: newEndTime,
+                          agentId: newAgentId,
+                          updatedAt: new Date(),
+                      }
+                    : apt
+            ),
+        });
+
+        try {
+            // Parse the appointment ID
+            const haloAppointmentId = parseInt(id);
+
+            // Build update with both start and end times, and agent
+            const update: Partial<HaloAppointment> & { id: number } = {
+                id: haloAppointmentId,
+                start_date: newStartTime.toISOString(),
+                end_date: newEndTime.toISOString(),
+                agent_id: newAgentId,
+            };
+
+            // Call the API
+            await apiCreateOrUpdateAppointment(update);
+
+            // Success - optimistic update is already applied
+        } catch (error) {
+            // Rollback optimistic update on failure
+            const state = get();
+            set({
+                appointments: state.appointments.map((apt) =>
+                    apt.id === id
+                        ? {
+                              ...apt,
+                              startTime: originalStartTime,
+                              endTime: originalEndTime,
+                              agentId: originalAgentId,
+                          }
+                        : apt
+                ),
+            });
+
+            const { toast } = await import("sonner");
+            console.error("Failed to move appointment:", error);
+            toast.error("Failed to move appointment", {
+                description:
+                    error instanceof Error
+                        ? error.message
+                        : "An unknown error occurred",
+            });
+            throw error;
+        }
+    },
 
     resizeAppointment: async (id, newStartTime, newEndTime) => {
         const currentState = get();

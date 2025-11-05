@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useDroppableSlot } from '@/hooks/useDroppableSlot';
 import { useDispatchStore } from '@/stores/useDispatchStore';
 import { useTimeslotSelection } from '@/hooks/useTimeslotSelection';
+import { useDrag } from '@/contexts/DragContext';
 import { TimeSlotContextMenu } from './TimeSlotContextMenu';
 import { TriageDispatchModal } from '@/components/dispatch/TriageDispatchModal';
 import { CreateAppointmentModal } from './CreateAppointmentModal';
@@ -19,6 +20,7 @@ interface TimeSlotProps {
 
 export function TimeSlot({ agentId, startTime, className, style, children, isCurrentTime = false }: TimeSlotProps) {
   const { moveAppointment, haloTickets } = useDispatchStore();
+  const { setDraggedAppointment, setHoveredSlot } = useDrag();
   const {
     isSlotSelected,
     isFirstSelectedSlot,
@@ -141,6 +143,10 @@ export function TimeSlot({ agentId, startTime, className, style, children, isCur
 
     // Clear selection drag state
     setSelectionDraggedOver(false);
+
+    // Clear drag state immediately to remove placeholder
+    setDraggedAppointment(null);
+    setHoveredSlot(null);
   };
 
   const { ref, isDraggedOver } = useDroppableSlot(

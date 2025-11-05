@@ -1,3 +1,4 @@
+import { useMemo, memo } from 'react';
 import { format, setHours, setMinutes } from 'date-fns';
 import { AppointmentCard } from './AppointmentCard';
 import { TimeSlot } from './TimeSlot';
@@ -6,6 +7,7 @@ import { cn } from '@/lib/utils';
 import type { Appointment } from '@/types';
 import type { CalendarConfig } from '@/lib/calendarConfig';
 import { generateTimeSlots, getGridRowFromTime, getSubSlotOffset } from '@/lib/calendarConfig';
+import { useDrag } from '@/contexts/DragContext';
 
 interface CalendarColumnProps {
   agentId: number; // Changed from string to number
@@ -25,7 +27,7 @@ interface CalendarColumnProps {
   zoomLevel?: number; // Zoom level percentage (100, 75, 50, 25)
 }
 
-export function CalendarColumn({
+function CalendarColumnComponent({
   agentId,
   date,
   appointments,
@@ -43,6 +45,7 @@ export function CalendarColumn({
   zoomLevel = 100,
 }: CalendarColumnProps) {
   const timeSlots = generateTimeSlots(config);
+  const { draggedAppointment, hoveredSlot } = useDrag();
 
   // Calculate slot height based on zoom level (only affects regular hours)
   const BASE_SLOT_HEIGHT = 48;
@@ -78,83 +81,133 @@ export function CalendarColumn({
            (endHour < config.dayEndHour || (endHour === config.dayEndHour && endMinute === 0));
   });
 
-  // Helper to check if two appointments overlap on this day
-  const appointmentsOverlap = (apt1: Appointment, apt2: Appointment) => {
-    const dayStart = new Date(date);
-    dayStart.setHours(config.dayStartHour, 0, 0, 0);
-    const dayEnd = new Date(date);
-    dayEnd.setHours(config.dayEndHour, 0, 0, 0);
-
-    const apt1Start = apt1.startTime > dayStart ? apt1.startTime : dayStart;
-    const apt1End = apt1.endTime < dayEnd ? apt1.endTime : dayEnd;
-    const apt2Start = apt2.startTime > dayStart ? apt2.startTime : dayStart;
-    const apt2End = apt2.endTime < dayEnd ? apt2.endTime : dayEnd;
-
-    return apt1Start < apt2End && apt2Start < apt1End;
+  // Helper to check if two dates are on the same day
+  const isSameDay = (date1: Date, date2: Date) => {
+    return date1.getFullYear() === date2.getFullYear() &&
+           date1.getMonth() === date2.getMonth() &&
+           date1.getDate() === date2.getDate();
   };
 
-  // Outlook-style column-packing: appointments only constrain each other if they overlap in time
-  // Sort appointments by start time to avoid recursion issues
-  const sortedAppointments = [...regularAppointments].sort(
-    (a, b) => a.startTime.getTime() - b.startTime.getTime()
-  );
+  // Only create placeholder if:
+  // 1. An appointment is being dragged
+  // 2. Mouse is over a slot
+  // 3. The slot is for THIS agent
+  // 4. The slot is on THIS day
+  const shouldShowPlaceholder =
+    draggedAppointment &&
+    hoveredSlot &&
+    hoveredSlot.agentId === agentId &&
+    isSameDay(hoveredSlot.startTime, date);
 
-  const columnCache = new Map<string, number>();
-
-  // Process appointments in order and assign columns
-  for (const appointment of sortedAppointments) {
-    // Find which columns are occupied by earlier appointments that overlap with this one
-    const overlapping = sortedAppointments.filter(
-      (other) =>
-        other.id !== appointment.id &&
-        appointmentsOverlap(appointment, other) &&
-        columnCache.has(other.id) // Only consider already-processed appointments
-    );
-
-    if (overlapping.length === 0) {
-      columnCache.set(appointment.id, 0);
-      continue;
-    }
-
-    // Get columns used by overlapping appointments
-    const occupiedColumns = new Set<number>();
-    for (const other of overlapping) {
-      occupiedColumns.add(columnCache.get(other.id)!);
-    }
-
-    // Find first available column
-    let column = 0;
-    while (occupiedColumns.has(column)) {
-      column++;
-    }
-
-    columnCache.set(appointment.id, column);
-  }
-
-  const getAppointmentLayout = (appointment: Appointment) => {
-    const myColumn = columnCache.get(appointment.id) ?? 0;
-
-    // totalColumns is based ONLY on appointments that actually overlap with this one
-    const overlapping = regularAppointments.filter(
-      (other) => other.id !== appointment.id && appointmentsOverlap(appointment, other)
-    );
-
-    if (overlapping.length === 0) {
-      return { column: 0, totalColumns: 1 };
-    }
-
-    // Find the maximum column among this appointment and its overlapping appointments
-    let maxColumn = myColumn;
-    for (const other of overlapping) {
-      const otherColumn = columnCache.get(other.id) ?? 0;
-      maxColumn = Math.max(maxColumn, otherColumn);
-    }
+  const placeholderAppointment = useMemo(() => {
+    if (!shouldShowPlaceholder || !draggedAppointment || !hoveredSlot) return null;
 
     return {
-      column: myColumn,
-      totalColumns: maxColumn + 1,
+      ...draggedAppointment,
+      id: '__placeholder__',
+      startTime: hoveredSlot.startTime,
+      endTime: new Date(
+        hoveredSlot.startTime.getTime() +
+          (draggedAppointment.endTime.getTime() - draggedAppointment.startTime.getTime())
+      ),
+      agentId: hoveredSlot.agentId,
     };
-  };
+  }, [shouldShowPlaceholder, draggedAppointment, hoveredSlot]);
+
+  // Build the list of appointments to display
+  // Only hide the dragged appointment if we're showing its placeholder in THIS column
+  // Memoize to prevent dependency issues
+  const appointmentsForLayout = useMemo(() => {
+    return shouldShowPlaceholder
+      ? [
+          ...regularAppointments.filter((apt) => apt.id !== draggedAppointment.id),
+          placeholderAppointment!,
+        ]
+      : regularAppointments;
+  }, [shouldShowPlaceholder, regularAppointments, draggedAppointment, placeholderAppointment]);
+
+  // Memoize layout calculations to prevent flickering
+  const getAppointmentLayout = useMemo(() => {
+    // Helper to check if two appointments overlap on this day
+    const appointmentsOverlap = (apt1: Appointment, apt2: Appointment) => {
+      const dayStart = new Date(date);
+      dayStart.setHours(config.dayStartHour, 0, 0, 0);
+      const dayEnd = new Date(date);
+      dayEnd.setHours(config.dayEndHour, 0, 0, 0);
+
+      const apt1Start = apt1.startTime > dayStart ? apt1.startTime : dayStart;
+      const apt1End = apt1.endTime < dayEnd ? apt1.endTime : dayEnd;
+      const apt2Start = apt2.startTime > dayStart ? apt2.startTime : dayStart;
+      const apt2End = apt2.endTime < dayEnd ? apt2.endTime : dayEnd;
+
+      return apt1Start < apt2End && apt2Start < apt1End;
+    };
+
+    // Outlook-style column-packing: appointments only constrain each other if they overlap in time
+    // Sort appointments by start time to avoid recursion issues
+    const sortedAppointments = [...appointmentsForLayout].sort(
+      (a, b) => a.startTime.getTime() - b.startTime.getTime()
+    );
+
+    const cache = new Map<string, number>();
+
+    // Process appointments in order and assign columns
+    for (const appointment of sortedAppointments) {
+      // Find which columns are occupied by earlier appointments that overlap with this one
+      const overlapping = sortedAppointments.filter(
+        (other) =>
+          other.id !== appointment.id &&
+          appointmentsOverlap(appointment, other) &&
+          cache.has(other.id) // Only consider already-processed appointments
+      );
+
+      if (overlapping.length === 0) {
+        cache.set(appointment.id, 0);
+        continue;
+      }
+
+      // Get columns used by overlapping appointments
+      const occupiedColumns = new Set<number>();
+      for (const other of overlapping) {
+        occupiedColumns.add(cache.get(other.id)!);
+      }
+
+      // Find first available column
+      let column = 0;
+      while (occupiedColumns.has(column)) {
+        column++;
+      }
+
+      cache.set(appointment.id, column);
+    }
+
+    const getLayout = (appointment: Appointment) => {
+      const myColumn = cache.get(appointment.id) ?? 0;
+
+      // totalColumns is based ONLY on appointments that actually overlap with this one
+      const overlapping = appointmentsForLayout.filter(
+        (other) => other.id !== appointment.id && appointmentsOverlap(appointment, other)
+      );
+
+      if (overlapping.length === 0) {
+        return { column: 0, totalColumns: 1 };
+      }
+
+      // Find the maximum column among this appointment and its overlapping appointments
+      let maxColumn = myColumn;
+      for (const other of overlapping) {
+        const otherColumn = cache.get(other.id) ?? 0;
+        maxColumn = Math.max(maxColumn, otherColumn);
+      }
+
+      return {
+        column: myColumn,
+        totalColumns: maxColumn + 1,
+      };
+    };
+
+    return getLayout;
+  }, [appointmentsForLayout, config.dayStartHour, config.dayEndHour, date]);
 
   // Get positioning for appointment (using pixels for absolute positioning)
   const getAppointmentGridStyle = (appointment: Appointment) => {
@@ -322,15 +375,29 @@ export function CalendarColumn({
         })}
 
         {/* Appointments positioned in grid */}
-        {regularAppointments.map((appointment) => {
+        {appointmentsForLayout.map((appointment) => {
           const style = getAppointmentGridStyle(appointment);
+          const isPlaceholder = appointment.id === '__placeholder__';
+          const isDragging = Boolean(draggedAppointment);
+          // Disable pointer-events on ALL appointments while dragging (not just the dragged one)
+          // This allows drops to pass through to TimeSlots even when dropping over other appointments
+          const shouldBlockPointerEvents = isDragging;
           return (
             <div
               key={appointment.id}
-              className="absolute pointer-events-auto"
+              className={cn(
+                "absolute pointer-events-none",
+                isPlaceholder && "opacity-40",
+                // Disable transitions while dragging to prevent flicker
+                !isDragging && "transition-all duration-150"
+              )}
               style={style}
             >
-              <AppointmentCard appointment={appointment} />
+              <AppointmentCard
+                appointment={appointment}
+                isBeingDragged={shouldBlockPointerEvents}
+                slotHeight={slotHeight}
+              />
             </div>
           );
         })}
@@ -384,3 +451,6 @@ export function CalendarColumn({
     </div>
   );
 }
+
+// Memoize to prevent unnecessary re-renders when drag state changes in other columns
+export const CalendarColumn = memo(CalendarColumnComponent);

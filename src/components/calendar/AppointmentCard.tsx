@@ -9,9 +9,11 @@ import type { Appointment } from "@/types";
 
 interface AppointmentCardProps {
     appointment: Appointment;
+    isBeingDragged?: boolean;
+    slotHeight?: number;
 }
 
-export function AppointmentCard({ appointment }: AppointmentCardProps) {
+export function AppointmentCard({ appointment, isBeingDragged = false, slotHeight = 48 }: AppointmentCardProps) {
     const { resizeAppointment, appointments } = useDispatchStore();
     const dragRef = useDraggableAppointment(appointment);
 
@@ -37,7 +39,8 @@ export function AppointmentCard({ appointment }: AppointmentCardProps) {
     const { startResize, isResizing } = useAppointmentResize(
         appointment,
         resizeAppointment,
-        handleResizePreview
+        handleResizePreview,
+        slotHeight
     );
 
     const getStatusIcon = () => {
@@ -61,7 +64,10 @@ export function AppointmentCard({ appointment }: AppointmentCardProps) {
             <div
                 ref={dragRef}
                 className={cn(
-                    "h-full rounded border-l-4 p-2 text-gray-900 shadow-sm hover:shadow-md cursor-grab active:cursor-grabbing relative group",
+                    "h-full rounded border-l-4 p-2 text-gray-900 shadow-sm hover:shadow-md cursor-grab active:cursor-grabbing relative group overflow-hidden",
+                    // Only enable pointer-events when NOT being dragged
+                    !isBeingDragged && "pointer-events-auto",
+                    isBeingDragged && "pointer-events-none",
                     !isResizing && "transition-all",
                     isResizing && "z-50",
                     isCompleted && "opacity-60"
@@ -76,7 +82,7 @@ export function AppointmentCard({ appointment }: AppointmentCardProps) {
             >
                 {/* Completed checkmark icon in top right */}
                 {isCompleted && (
-                    <div className="absolute top-1 right-1">
+                    <div className="absolute top-1 right-1 z-20">
                         <CheckCircle2 className="h-4 w-4 text-gray-900/70" />
                     </div>
                 )}
@@ -95,17 +101,20 @@ export function AppointmentCard({ appointment }: AppointmentCardProps) {
                     <GripHorizontal className="h-3 w-3 opacity-90" />
                 </div>
 
-                <div className="flex items-start gap-1 mb-1">
-                    {getStatusIcon()}
-                    <div className="text-xs font-semibold truncate flex-1">
-                        {appointment.subject}
+                {/* Content wrapper with proper overflow handling */}
+                <div className="overflow-hidden">
+                    <div className="flex items-start gap-1 mb-1 min-w-0">
+                        {getStatusIcon()}
+                        <div className="text-xs font-semibold truncate flex-1 min-w-0">
+                            {appointment.subject}
+                        </div>
                     </div>
+                    {(appointment.client_name || appointment.user_name) && (
+                        <div className="text-xs opacity-90 truncate">
+                            {appointment.client_name || appointment.user_name}
+                        </div>
+                    )}
                 </div>
-                {(appointment.client_name || appointment.user_name) && (
-                    <div className="text-xs opacity-90 truncate">
-                        {appointment.client_name || appointment.user_name}
-                    </div>
-                )}
 
                 {/* Bottom resize handle */}
                 <div
