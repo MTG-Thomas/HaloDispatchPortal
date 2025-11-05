@@ -2,6 +2,14 @@ import type { Ticket, EnrichedTicket, ClientCache } from '@/types/halo';
 import { formatDistanceToNow, isPast } from 'date-fns';
 
 /**
+ * Check if a date is the sentinel "null" date used by Halo PSA
+ * "1899-12-30T00:00:00" is used to represent "no date set"
+ */
+function isNullDate(dateString: string): boolean {
+  return dateString.startsWith('1899-12-30');
+}
+
+/**
  * Enrich a ticket with lookup data from ClientCache
  * Computes display-ready fields like agentName, statusName, slaTimeLeft, etc.
  */
@@ -54,7 +62,7 @@ export function enrichTicket(
   } else if (ticket.onhold) {
     enriched.slaTimeLeft = 'On Hold';
     enriched.slaState = 'onhold';
-  } else if (ticket.fixbydate) {
+  } else if (ticket.fixbydate && !isNullDate(ticket.fixbydate)) {
     const fixBy = new Date(ticket.fixbydate);
     const now = new Date();
 
@@ -76,7 +84,7 @@ export function enrichTicket(
       enriched.slaTimeLeft = formatDistanceToNow(fixBy, { addSuffix: true });
     }
   } else {
-    enriched.slaTimeLeft = 'No SLA';
+    enriched.slaTimeLeft = 'None';
     enriched.slaState = 'ok';
   }
 

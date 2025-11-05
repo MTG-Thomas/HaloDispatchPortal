@@ -7,6 +7,7 @@ import { CalendarColumn } from '../CalendarColumn';
 import { TimeLabelsColumn } from '../TimeLabelsColumn';
 import { cn } from '@/lib/utils';
 import { DEFAULT_CALENDAR_CONFIG } from '@/lib/calendarConfig';
+import type { Appointment } from '@/types';
 
 export function WeekView() {
   // Shared heights for all columns
@@ -60,12 +61,19 @@ export function WeekView() {
     });
   };
 
+  // Helper to check if appointment should be treated as all-day (matches CalendarColumn logic)
+  const isAllDayAppointment = (apt: Appointment) => {
+    if (apt.isAllDay) return true;
+    const numericId = parseInt(apt.id);
+    return numericId < 0; // Negative IDs are treated as all-day
+  };
+
   // Check if any appointments exist in before/after hours for any day
   const hasBeforeHours = (agentId: string) => {
     return days.some((day) => {
       const dayAppointments = getAppointmentsForAgentAndDay(agentId, day);
       return dayAppointments.some(
-        (apt) => !apt.isAllDay && apt.startTime.getHours() < config.dayStartHour
+        (apt) => !isAllDayAppointment(apt) && apt.startTime.getHours() < config.dayStartHour
       );
     });
   };
@@ -74,10 +82,11 @@ export function WeekView() {
     return days.some((day) => {
       const dayAppointments = getAppointmentsForAgentAndDay(agentId, day);
       return dayAppointments.some((apt) => {
-        if (apt.isAllDay) return false;
+        if (isAllDayAppointment(apt)) return false;
         const endHour = apt.endTime.getHours();
         const endMinute = apt.endTime.getMinutes();
-        return endHour >= config.dayEndHour || (endHour === config.dayEndHour - 1 && endMinute > 45);
+        // Only show after hours if appointment ends after dayEndHour (5 PM = 17:00)
+        return endHour > config.dayEndHour || (endHour === config.dayEndHour && endMinute > 0);
       });
     });
   };
@@ -95,9 +104,9 @@ export function WeekView() {
       <div className="min-w-[1000px]">
         {/* Header Row - Days */}
         <div className="sticky top-0 z-20 bg-card border-b flex">
-          {/* Agent/Resource Column Header */}
-          <div className="w-48 border-r p-2 bg-muted font-medium text-sm flex items-center">
-            Agent / Resource
+          {/* Resource Column Header */}
+          <div className="w-48 flex-shrink-0 border-r p-2 bg-muted font-medium text-sm flex items-center">
+            Resource
           </div>
           {/* Day Headers */}
           {days.map((day) => (
@@ -120,7 +129,7 @@ export function WeekView() {
             {/* Agent Name and Utilization Row */}
             <div className="flex border-b bg-muted/30">
               {/* Agent Info Column */}
-              <div className="w-48 border-r p-2 flex items-center gap-2">
+              <div className="w-48 flex-shrink-0 border-r p-2 flex items-center gap-2">
                 <div
                   className="h-3 w-3 rounded-full flex-shrink-0"
                   style={{ backgroundColor: agent.color }}
@@ -142,7 +151,7 @@ export function WeekView() {
                 config={config}
                 hasBeforeHours={hasBeforeHours(agent.id)}
                 hasAfterHours={hasAfterHours(agent.id)}
-                className="w-48"
+                className="w-48 flex-shrink-0"
                 allDayHeight={allDayHeight}
                 beforeHoursHeight={beforeHoursHeight}
                 afterHoursHeight={afterHoursHeight}

@@ -12,7 +12,7 @@ import {
 import { CompletionDialog } from '@/components/calendar/CompletionDialog';
 import { useDispatchStore } from '@/stores/useDispatchStore';
 import { useConfigStore } from '@/stores/configStore';
-import { CheckCircle, XCircle, Clock, Edit, Trash2, Play } from 'lucide-react';
+import { CheckCircle, XCircle, Clock, Trash2, Play, ExternalLink, FileText } from 'lucide-react';
 import { startOfWeek, endOfWeek, startOfMonth, endOfMonth } from 'date-fns';
 import type { Appointment, AppointmentStatus } from '@/types';
 
@@ -45,19 +45,22 @@ export function AppointmentContextMenu({ appointment, children }: AppointmentCon
     }
   };
 
-  const handleEdit = () => {
-    // Strip "apt-" prefix to get the actual Halo appointment ID
-    const haloAppointmentId = appointment.id.replace(/^apt-/, '');
-
+  const handleOpenAppointment = () => {
     // Build the URL to open in Halo PSA (resourceServer already includes https://)
-    const url = `${config.resourceServer}/appointment?id=${haloAppointmentId}&showmenu=false`;
+    const url = `${config.resourceServer}/appointment?id=${appointment.id}&showmenu=false`;
 
-    // Open in a popup window (800x600)
-    window.open(
-      url,
-      'EditAppointment',
-      'width=800,height=600,menubar=no,toolbar=no,location=no,status=no'
-    );
+    // Open in a new tab
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleOpenTicket = () => {
+    if (!appointment.ticketId) return;
+
+    // Build the URL to open ticket in Halo PSA
+    const url = `${config.resourceServer}/tickets?id=${appointment.ticketId}`;
+
+    // Open in a new tab
+    window.open(url, '_blank', 'noopener,noreferrer');
   };
 
   const handleMarkDone = () => {
@@ -65,8 +68,8 @@ export function AppointmentContextMenu({ appointment, children }: AppointmentCon
   };
 
   const handleComplete = async (noteHtml: string, timeTaken: number) => {
-    // Strip "apt-" prefix to get the actual Halo appointment ID
-    const haloAppointmentId = parseInt(appointment.id.replace(/^apt-/, ''));
+    // Parse the appointment ID
+    const haloAppointmentId = parseInt(appointment.id);
 
     // Wrap the note in HTML paragraph tags
     const formattedNote = noteHtml.trim() ? `<p>${noteHtml}</p>` : '';
@@ -136,9 +139,17 @@ export function AppointmentContextMenu({ appointment, children }: AppointmentCon
           {children}
         </ContextMenuTrigger>
         <ContextMenuContent className="w-64">
-          <ContextMenuItem onClick={handleEdit}>
-            <Edit className="h-4 w-4 mr-2" />
-            Edit Appointment
+          <ContextMenuItem onClick={handleOpenAppointment}>
+            <ExternalLink className="h-4 w-4 mr-2" />
+            Open Appointment
+          </ContextMenuItem>
+
+          <ContextMenuItem
+            onClick={handleOpenTicket}
+            disabled={!appointment.ticketId}
+          >
+            <FileText className="h-4 w-4 mr-2" />
+            Open Ticket
           </ContextMenuItem>
 
           <ContextMenuSeparator />

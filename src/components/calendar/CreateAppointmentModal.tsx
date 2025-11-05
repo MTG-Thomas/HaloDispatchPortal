@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -65,9 +65,13 @@ export function CreateAppointmentModal({
 
   const [errors, setErrors] = useState<FormErrors>({});
 
-  // Reset form when modal opens with new data
-  useState(() => {
-    if (open) {
+  // Track previous open state to detect when modal opens
+  const [prevOpen, setPrevOpen] = useState(false);
+
+  // Reset form when modal opens (only on open transition, not on other prop changes)
+  useEffect(() => {
+    if (open && !prevOpen) {
+      // Modal is opening
       setFormData({
         subject: '',
         start_date: startTime,
@@ -80,11 +84,34 @@ export function CreateAppointmentModal({
       });
       setErrors({});
     }
-  });
+    setPrevOpen(open);
+  }, [open, startTime, endTime, agentId, defaultAppointmentTypeId, prevOpen]);
 
-  // Update form data
+  // Update appointment_type_id when it becomes available after modal is open
+  useEffect(() => {
+    if (open && defaultAppointmentTypeId !== null && formData.appointment_type_id === null) {
+      updateFormData({ appointment_type_id: defaultAppointmentTypeId });
+    }
+  }, [open, defaultAppointmentTypeId, formData.appointment_type_id, updateFormData]);
+
+  // Update form data and clear errors for changed fields
   const updateFormData = useCallback((updates: Partial<DispatchFormData>) => {
     setFormData((prev) => ({ ...prev, ...updates }));
+
+    // Clear errors for fields that are being updated
+    setErrors((prev) => {
+      if (!prev.dispatch) return prev;
+
+      const newDispatchErrors = { ...prev.dispatch };
+      Object.keys(updates).forEach((key) => {
+        delete newDispatchErrors[key as keyof DispatchFormData];
+      });
+
+      return {
+        ...prev,
+        dispatch: newDispatchErrors,
+      };
+    });
   }, []);
 
   // Set duration using preset buttons
@@ -138,7 +165,7 @@ export function CreateAppointmentModal({
         agent_id: 'Agent is required',
       };
     }
-    if (!formData.appointment_type_id) {
+    if (formData.appointment_type_id == null || formData.appointment_type_id < 0) {
       newErrors.dispatch = {
         ...newErrors.dispatch,
         appointment_type_id: 'Appointment type is required',

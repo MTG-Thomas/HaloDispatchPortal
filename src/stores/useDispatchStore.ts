@@ -224,7 +224,7 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
         set((state) => {
             const newAppointment: Appointment = {
                 ...appointmentData,
-                id: `apt-${Date.now()}`,
+                id: Date.now().toString(),
                 createdAt: new Date(),
                 updatedAt: new Date(),
             };
@@ -287,8 +287,8 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
         });
 
         try {
-            // Strip "apt-" prefix to get the actual Halo appointment ID
-            const haloAppointmentId = parseInt(id.replace(/^apt-/, ""));
+            // Parse the appointment ID
+            const haloAppointmentId = parseInt(id);
 
             // Determine which field changed and build partial update
             const update: Partial<HaloAppointment> & { id: number } = {
@@ -347,7 +347,7 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
 
                 // Update the local state
                 set((state) => {
-                    const appointmentId = `apt-${updatedAppointment.id}`;
+                    const appointmentId = updatedAppointment.id.toString();
                     const existingIndex = state.appointments.findIndex(
                         (apt) => apt.id === appointmentId
                     );
@@ -355,9 +355,7 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
                     // Convert HaloAppointment to Appointment format
                     const mappedAppointment: Appointment = {
                         id: appointmentId,
-                        ticketId: updatedAppointment.ticket_id
-                            ? `tkt-${updatedAppointment.ticket_id}`
-                            : "",
+                        ticketId: updatedAppointment.ticket_id?.toString() || "",
                         agentId: updatedAppointment.agent_id,
                         startTime: new Date(
                             updatedAppointment.start_date.endsWith("Z")
@@ -449,7 +447,7 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
 
             // Create appointment
             const newAppointment: Appointment = {
-                id: `apt-${Date.now()}`,
+                id: Date.now().toString(),
                 ticketId: ticket.id,
                 ticket,
                 agentId,
@@ -1056,10 +1054,8 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
                         status === "completed" ? "#9ca3af" : haloApt.colour;
 
                     return {
-                        id: `apt-${haloApt.id}`,
-                        ticketId: haloApt.ticket_id
-                            ? `ticket-${haloApt.ticket_id}`
-                            : "",
+                        id: haloApt.id.toString(),
+                        ticketId: haloApt.ticket_id?.toString() || "",
                         agentId: haloApt.agent_id,
                         startTime,
                         endTime,

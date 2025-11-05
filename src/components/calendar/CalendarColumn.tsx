@@ -44,7 +44,7 @@ export function CalendarColumn({
 
   // Helper to check if appointment has negative ID (should be treated as all-day)
   const hasNegativeId = (apt: Appointment) => {
-    const numericId = parseInt(apt.id.replace(/^apt-/, ''));
+    const numericId = parseInt(apt.id);
     return numericId < 0;
   };
 

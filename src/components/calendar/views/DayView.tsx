@@ -6,6 +6,7 @@ import { UtilizationBar } from '../UtilizationBar';
 import { CalendarColumn } from '../CalendarColumn';
 import { TimeLabelsColumn } from '../TimeLabelsColumn';
 import { DEFAULT_CALENDAR_CONFIG } from '@/lib/calendarConfig';
+import type { Appointment } from '@/types';
 
 export function DayView() {
   // Shared heights for all columns
@@ -43,16 +44,24 @@ export function DayView() {
     return dayAppointments.filter((apt) => apt.agentId === agentId);
   };
 
+  // Helper to check if appointment should be treated as all-day (matches CalendarColumn logic)
+  const isAllDayAppointment = (apt: Appointment) => {
+    if (apt.isAllDay) return true;
+    const numericId = parseInt(apt.id);
+    return numericId < 0; // Negative IDs are treated as all-day
+  };
+
   // Check if any agent has before/after hours appointments
   const hasBeforeHours = dayAppointments.some(
-    (apt) => !apt.isAllDay && apt.startTime.getHours() < config.dayStartHour
+    (apt) => !isAllDayAppointment(apt) && apt.startTime.getHours() < config.dayStartHour
   );
 
   const hasAfterHours = dayAppointments.some((apt) => {
-    if (apt.isAllDay) return false;
+    if (isAllDayAppointment(apt)) return false;
     const endHour = apt.endTime.getHours();
     const endMinute = apt.endTime.getMinutes();
-    return endHour >= config.dayEndHour || (endHour === config.dayEndHour - 1 && endMinute > 45);
+    // Only show after hours if appointment ends after dayEndHour (5 PM = 17:00)
+    return endHour > config.dayEndHour || (endHour === config.dayEndHour && endMinute > 0);
   });
 
   if (visibleAgents.length === 0) {
@@ -64,62 +73,63 @@ export function DayView() {
   }
 
   return (
-    <div className="h-full flex">
-      {/* Sticky Time Column */}
-      <TimeLabelsColumn
-        config={config}
-        hasBeforeHours={hasBeforeHours}
-        hasAfterHours={hasAfterHours}
-        className="w-20 sticky left-0 z-10"
-        allDayHeight={allDayHeight}
-        beforeHoursHeight={beforeHoursHeight}
-        afterHoursHeight={afterHoursHeight}
-      />
-
-      {/* Scrollable Calendar Content */}
-      <div className="flex-1 overflow-auto">
-        <div className="min-w-[700px]">
-          {/* Header */}
-          <div className="sticky top-0 z-20 bg-card border-b">
-            <div className="flex">
-              {visibleAgents.map((agent) => (
-                <div key={agent.id} className="flex-1 border-r p-2 text-center">
-                  <div className="flex items-center justify-center gap-2 mb-2">
-                    <div
-                      className="h-3 w-3 rounded-full"
-                      style={{ backgroundColor: agent.color }}
-                    />
-                    <span className="font-medium text-sm">{agent.name}</span>
-                  </div>
-                  <UtilizationBar agentId={agent.id} date={selectedDate} />
-                </div>
-              ))}
-            </div>
+    <div className="h-full overflow-auto">
+      <div className="min-w-[700px]">
+        {/* Header Row */}
+        <div className="sticky top-0 z-20 bg-card border-b flex">
+          {/* Resource Column Header */}
+          <div className="w-48 flex-shrink-0 border-r p-2 bg-muted font-medium text-sm flex items-center">
+            Resource
           </div>
+          {/* Agent Headers */}
+          {visibleAgents.map((agent) => (
+            <div key={agent.id} className="flex-1 border-r p-2 text-center">
+              <div className="flex items-center justify-center gap-2 mb-2">
+                <div
+                  className="h-3 w-3 rounded-full"
+                  style={{ backgroundColor: agent.color }}
+                />
+                <span className="font-medium text-sm">{agent.name}</span>
+              </div>
+              <UtilizationBar agentId={agent.id} date={selectedDate} />
+            </div>
+          ))}
+        </div>
+
+        {/* Content Row */}
+        <div className="flex">
+          {/* Time Labels Column */}
+          <TimeLabelsColumn
+            config={config}
+            hasBeforeHours={hasBeforeHours}
+            hasAfterHours={hasAfterHours}
+            className="w-48 flex-shrink-0"
+            allDayHeight={allDayHeight}
+            beforeHoursHeight={beforeHoursHeight}
+            afterHoursHeight={afterHoursHeight}
+          />
 
           {/* Agent Columns */}
-          <div className="flex">
-            {visibleAgents.map((agent) => {
-              const agentAppointments = getAppointmentsForAgent(agent.id);
-              return (
-                <CalendarColumn
-                  key={agent.id}
-                  agentId={agent.id}
-                  date={selectedDate}
-                  appointments={agentAppointments}
-                  config={config}
-                  allDayHeight={allDayHeight}
-                  beforeHoursHeight={beforeHoursHeight}
-                  afterHoursHeight={afterHoursHeight}
-                  onAllDayHeightChange={setAllDayHeight}
-                  onBeforeHoursHeightChange={setBeforeHoursHeight}
-                  onAfterHoursHeightChange={setAfterHoursHeight}
-                  showBeforeHours={hasBeforeHours}
-                  showAfterHours={hasAfterHours}
-                />
-              );
-            })}
-          </div>
+          {visibleAgents.map((agent) => {
+            const agentAppointments = getAppointmentsForAgent(agent.id);
+            return (
+              <CalendarColumn
+                key={agent.id}
+                agentId={agent.id}
+                date={selectedDate}
+                appointments={agentAppointments}
+                config={config}
+                allDayHeight={allDayHeight}
+                beforeHoursHeight={beforeHoursHeight}
+                afterHoursHeight={afterHoursHeight}
+                onAllDayHeightChange={setAllDayHeight}
+                onBeforeHoursHeightChange={setBeforeHoursHeight}
+                onAfterHoursHeightChange={setAfterHoursHeight}
+                showBeforeHours={hasBeforeHours}
+                showAfterHours={hasAfterHours}
+              />
+            );
+          })}
         </div>
       </div>
     </div>
