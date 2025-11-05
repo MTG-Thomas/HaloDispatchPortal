@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, lazy, Suspense } from "react";
 import { Navigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import {
@@ -8,10 +8,12 @@ import {
     CardHeader,
     CardTitle,
 } from "@/components/ui/card";
-import { ConfigDialog } from "@/components/ConfigDialog";
 import { useAuth } from "@/contexts/AuthContext";
 import { useConfig } from "@/hooks/useConfig";
 import { Calendar, Shield, Zap } from "lucide-react";
+
+// Lazy load ConfigDialog - only needed when user clicks to configure
+const ConfigDialog = lazy(() => import("@/components/ConfigDialog").then(m => ({ default: m.ConfigDialog })));
 
 const Login: React.FC = () => {
     const { startAuth, isLoading, isAuthenticated } = useAuth();
@@ -92,7 +94,9 @@ const Login: React.FC = () => {
                     </div>
 
                     <div className="space-y-3">
-                        <ConfigDialog />
+                        <Suspense fallback={<div className="h-10" />}>
+                            <ConfigDialog />
+                        </Suspense>
 
                         {isLoaded && isConfigured && (
                             <Button

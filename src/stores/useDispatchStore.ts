@@ -1,4 +1,7 @@
 import { create } from "zustand";
+import { toast } from "sonner";
+import { refreshToken, logout } from "@/services/auth/authService";
+import { resetCriticalErrorFlag } from "@/lib/api-client";
 import type {
     Agent,
     Team,
@@ -316,7 +319,6 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
                 ),
             });
 
-            const { toast } = await import("sonner");
             console.error("Failed to move appointment:", error);
             toast.error("Failed to move appointment", {
                 description:
@@ -388,7 +390,6 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
                 ),
             });
 
-            const { toast } = await import("sonner");
             console.error("Failed to resize appointment:", error);
             toast.error("Failed to resize appointment", {
                 description:
@@ -477,7 +478,6 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
                 });
             }
         } catch (error) {
-            const { toast } = await import("sonner");
             console.error("Failed to create/update appointment:", error);
             toast.error("Failed to update appointment", {
                 description:
@@ -780,9 +780,6 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
                 );
 
                 // Token is likely expired/invalid. Try to refresh it.
-                const { refreshToken } = await import(
-                    "@/services/auth/authService"
-                );
                 const { config } = useConfigStore.getState();
 
                 const refreshSuccess = await refreshToken({
@@ -804,9 +801,6 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
                         console.error(
                             "ClientCache still invalid after token refresh, forcing re-login"
                         );
-                        const { logout } = await import(
-                            "@/services/auth/authService"
-                        );
                         logout();
                         return;
                     }
@@ -816,9 +810,6 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
                 } else {
                     // Token refresh failed - clear tokens and force re-login
                     console.error("Token refresh failed, forcing re-login");
-                    const { logout } = await import(
-                        "@/services/auth/authService"
-                    );
                     logout();
                     return;
                 }
@@ -1064,7 +1055,6 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
         set({ criticalApiError: null });
 
         // Reset the critical error flag in the API client
-        const { resetCriticalErrorFlag } = await import("@/lib/api-client");
         resetCriticalErrorFlag();
 
         // Reload client cache if it failed

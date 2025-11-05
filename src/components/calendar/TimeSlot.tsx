@@ -1,13 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { useDroppableSlot } from '@/hooks/useDroppableSlot';
 import { useDispatchStore } from '@/stores/useDispatchStore';
 import { useTimeslotSelection } from '@/hooks/useTimeslotSelection';
 import { useDrag } from '@/contexts/DragContext';
 import { TimeSlotContextMenu } from './TimeSlotContextMenu';
-import { TriageDispatchModal } from '@/components/dispatch/TriageDispatchModal';
-import { CreateAppointmentModal } from './CreateAppointmentModal';
 import { cn } from '@/lib/utils';
 import type { Ticket, Appointment } from '@/types';
+
+// Lazy load modals - only loaded when user interacts
+const TriageDispatchModal = lazy(() => import('@/components/dispatch/TriageDispatchModal').then(m => ({ default: m.TriageDispatchModal })));
+const CreateAppointmentModal = lazy(() => import('./CreateAppointmentModal').then(m => ({ default: m.CreateAppointmentModal })));
 
 interface TimeSlotProps {
   agentId: number; // Changed from string to number
@@ -212,44 +214,50 @@ export function TimeSlot({ agentId, startTime, className, style, children, isCur
       </TimeSlotContextMenu>
 
       {/* Triage & Dispatch Modal (for dropped tickets or new tickets) */}
-      {triageModalOpen && (() => {
-        // For new tickets, don't pass a ticket prop
-        if (isCreatingNewTicket) {
-          return (
-            <TriageDispatchModal
-              open={triageModalOpen}
-              onOpenChange={setTriageModalOpen}
-              dropLocation={dropLocation}
-            />
-          );
-        }
+      {triageModalOpen && (
+        <Suspense fallback={null}>
+          {(() => {
+            // For new tickets, don't pass a ticket prop
+            if (isCreatingNewTicket) {
+              return (
+                <TriageDispatchModal
+                  open={triageModalOpen}
+                  onOpenChange={setTriageModalOpen}
+                  dropLocation={dropLocation}
+                />
+              );
+            }
 
-        // For existing tickets, find the ticket
-        if (droppedTicketId !== null) {
-          const ticket = haloTickets.find((t) => t.id === droppedTicketId);
-          if (!ticket) return null;
-          return (
-            <TriageDispatchModal
-              open={triageModalOpen}
-              onOpenChange={setTriageModalOpen}
-              ticket={ticket}
-              dropLocation={dropLocation}
-            />
-          );
-        }
+            // For existing tickets, find the ticket
+            if (droppedTicketId !== null) {
+              const ticket = haloTickets.find((t) => t.id === droppedTicketId);
+              if (!ticket) return null;
+              return (
+                <TriageDispatchModal
+                  open={triageModalOpen}
+                  onOpenChange={setTriageModalOpen}
+                  ticket={ticket}
+                  dropLocation={dropLocation}
+                />
+              );
+            }
 
-        return null;
-      })()}
+            return null;
+          })()}
+        </Suspense>
+      )}
 
       {/* Create Appointment Modal */}
       {dropLocation && appointmentModalOpen && (
-        <CreateAppointmentModal
-          open={appointmentModalOpen}
-          onOpenChange={setAppointmentModalOpen}
-          agentId={dropLocation.agentId}
-          startTime={dropLocation.startTime}
-          endTime={dropLocation.endTime || new Date(dropLocation.startTime.getTime() + 30 * 60 * 1000)}
-        />
+        <Suspense fallback={null}>
+          <CreateAppointmentModal
+            open={appointmentModalOpen}
+            onOpenChange={setAppointmentModalOpen}
+            agentId={dropLocation.agentId}
+            startTime={dropLocation.startTime}
+            endTime={dropLocation.endTime || new Date(dropLocation.startTime.getTime() + 30 * 60 * 1000)}
+          />
+        </Suspense>
       )}
     </>
   );
