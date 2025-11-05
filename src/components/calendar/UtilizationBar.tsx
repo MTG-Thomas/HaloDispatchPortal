@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 
 interface UtilizationBarProps {
-  agentId: string;
+  agentId: number;
   date: Date;
 }
 

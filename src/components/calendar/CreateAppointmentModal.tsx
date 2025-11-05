@@ -25,6 +25,7 @@ interface CreateAppointmentModalProps {
 
 interface FormErrors {
   dispatch?: Partial<Record<keyof DispatchFormData, string>>;
+  triage?: Partial<Record<keyof DispatchFormData, string>>;
 }
 
 /**
@@ -68,6 +69,26 @@ export function CreateAppointmentModal({
   // Track previous open state to detect when modal opens
   const [prevOpen, setPrevOpen] = useState(false);
 
+  // Update form data and clear errors for changed fields
+  const updateFormData = useCallback((updates: Partial<DispatchFormData>) => {
+    setFormData((prev) => ({ ...prev, ...updates }));
+
+    // Clear errors for fields that are being updated
+    setErrors((prev) => {
+      if (!prev.dispatch) return prev;
+
+      const newDispatchErrors = { ...prev.dispatch };
+      Object.keys(updates).forEach((key) => {
+        delete newDispatchErrors[key as keyof DispatchFormData];
+      });
+
+      return {
+        ...prev,
+        dispatch: newDispatchErrors,
+      };
+    });
+  }, []);
+
   // Reset form when modal opens (only on open transition, not on other prop changes)
   useEffect(() => {
     if (open && !prevOpen) {
@@ -94,26 +115,6 @@ export function CreateAppointmentModal({
     }
   }, [open, defaultAppointmentTypeId, formData.appointment_type_id, updateFormData]);
 
-  // Update form data and clear errors for changed fields
-  const updateFormData = useCallback((updates: Partial<DispatchFormData>) => {
-    setFormData((prev) => ({ ...prev, ...updates }));
-
-    // Clear errors for fields that are being updated
-    setErrors((prev) => {
-      if (!prev.dispatch) return prev;
-
-      const newDispatchErrors = { ...prev.dispatch };
-      Object.keys(updates).forEach((key) => {
-        delete newDispatchErrors[key as keyof DispatchFormData];
-      });
-
-      return {
-        ...prev,
-        dispatch: newDispatchErrors,
-      };
-    });
-  }, []);
-
   // Set duration using preset buttons
   const setDuration = useCallback(
     (minutes: number) => {
@@ -129,7 +130,7 @@ export function CreateAppointmentModal({
 
   // Get error for a specific field
   const getError = useCallback(
-    (section: 'dispatch', field: string): string | undefined => {
+    (section: 'dispatch' | 'triage', field: string): string | undefined => {
       return errors[section]?.[field as keyof DispatchFormData];
     },
     [errors]

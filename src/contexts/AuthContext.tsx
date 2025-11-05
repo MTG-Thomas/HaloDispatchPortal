@@ -4,8 +4,8 @@ import React, {
   useContext,
   useEffect,
   useState,
-  ReactNode,
   useCallback,
+  type ReactNode,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { HaloUser } from '@/services/auth/types';

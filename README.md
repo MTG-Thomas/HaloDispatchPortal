@@ -1,73 +1,97 @@
-# React + TypeScript + Vite
+# Overview
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Halo Dispatch Portal is a client-only web application that creates a better dispatching view for HaloPSA, informed by Sea-Level (now Pax8) best practices many of us learned when maturing our MSPs. Unfortunately, those best practices don't translate well into HaloPSA, so the goal with this project is to use Halo-native features to recreate this experience.
 
-Currently, two official plugins are available:
+# Setup
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## 1. Create Halo Application
 
-## React Compiler
+Note: If you're self-hosting, only the URLs will change.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+1. Go to **Config > Integrations > Halo API** in your Halo instance
+2. Click **View Applications** → **New**
+3. Configure:
+    - **Name**: Halo Dispatch Portal
+    - **Auth Method**: Authorization Code (Native Application)
+    - **Redirect URI**: `https://halodispatchportal.gobifrost.com/auth/callback`
+    - **Permissions**: `all:standard`
+    - **Grant Types**: Authorization Code
+    - **CORS Whitelist**: `https://halodispatchportal.gobifrost.com`
 
-## Expanding the ESLint configuration
+## 2. Configure App
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+1. Start Halo Dispatch Portal
+2. Click **Configure** and enter:
+    - **Tenant**: Your subdomain (e.g., `mymsp` for `mymsp.halopsa.com`)
+    - **Auth Server**: Your Authorization Server URL (from Config > Integrations > Halo API)
+    - **Resource Server**: Your Resource Server URL (from Config > Integrations > Halo API)
+    - **Client ID**: From your Halo application details
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## 3. Connect
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+1. Click **Connect to Halo**
+2. Authorize in Halo
+3. Start dispatching!
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+# Usage
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Configuration
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+Areas, Lists, Teams and Agents are in the "Filters" flyout menu at the top. Instead of having to flip between views, we flatten the ticket list and group the lists in the first column. Since Halo's lists lack features like AND, OR and grouping operators, this approach lets you create multiple lists like "Unread", "New", and "Needs Scheduling" that all display together.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+![alt text](public/assets/documentation/image.png)
+
+This presents itself like this in the list of tickets:
+
+![alt text](public/assets/documentation/image-1.png)
+
+The goal is to create lists that represent all the things that need action and manage them to zero in one view. Unlike some other PSAs, a side benefit here is the "List" column tells you *why* something is there, which helps you figure out how to remove it.
+
+This isn't just for dispatchers. One of the goals was to let technicians work out of their calendar without the usual headache. If you're like me and have setup your lists creatively, you might have a "My Tickets" group. A technician would just filter to their list (which likely already exists) and their agent.
+
+![alt text](public/assets/documentation/image-2.png)
+
+![alt text](public/assets/documentation/image-3.png)
+
+## Scheduling
+
+You can drag and drop tickets from the list onto the calendar.
+
+![alt text](public/assets/documentation/image-4.png)
+
+On drop (or ticket creation) you'll see a window like this:
+
+![alt text](public/assets/documentation/image-6.png)
+
+The form includes what I felt were sensible defaults for most MSPs:
+
+- Ticket Type
+- Summary
+- Impact and Urgency
+- Category 1 (usually the Service Category)
+- Team
+- Agent
+
+In the second column, we have a simplified appointment window to avoid extra steps.
+
+Very little needs to be changed in most cases. The agent will be set to whoever's timeslot you dragged it to, existing defaults will stay, the appointment type will default to the first one and so forth.
+
+## Completing Tickets
+
+Straight from the calendar screen you can mark yourself as done.
+
+![alt text](public/assets/documentation/image-5.png)
+
+This lets you put in a note and the time taken.
+
+![alt text](public/assets/documentation/image-7.png)
+
+One of my biggest pet peeves in Halo is how tedious it is to mark appointments as complete with the flyout menu, scrolling, moving "Complete" button, etc. This stays simple so you can do what you need to do, no more no less.
+
+# Current Limitations
+
+A few things to note about the MVP:
+
+1. **Fixed Columns** - The ticket list has hand-selected columns. I couldn't figure out how all ticket properties were translated into Display Names (despite some being in the language pack and custom fields being available), so I simplified this for the MVP.
+
+2. **Simplified Ticket Fields** - Ticket creation and scheduling use a subset of available fields. I picked what I thought were sensible defaults that most instances should have. I didn't want to get into the rabbit hole of recreating Halo's dynamic visibility rules or parsing their field types to figure out things like dynamic lookups. I'm aware of the APIs to do this, but it felt too complex for an MVP.

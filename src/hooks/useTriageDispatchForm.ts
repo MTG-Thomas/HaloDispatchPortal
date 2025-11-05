@@ -181,7 +181,7 @@ export function useTriageDispatchForm({
 
       // Sync agent to dispatch section when changed in triage
       if (updates.agent_id !== undefined) {
-        setDispatch((prev) => ({ ...prev, agent_id: updates.agent_id }));
+        setDispatch((prev) => ({ ...prev, agent_id: updates.agent_id ?? null }));
       }
     },
     []

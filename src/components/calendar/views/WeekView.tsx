@@ -50,7 +50,7 @@ export function WeekView() {
   }, [weekStart.getTime(), weekEnd.getTime(), selectedResources, visibleAgents.length, calendarView]);
 
   // Helper to get appointments for a specific agent and day
-  const getAppointmentsForAgentAndDay = (agentId: string, day: Date) => {
+  const getAppointmentsForAgentAndDay = (agentId: number, day: Date) => {
     return appointments.filter((apt) => {
       if (apt.agentId !== agentId) return false;
 
@@ -73,7 +73,7 @@ export function WeekView() {
   };
 
   // Check if any appointments exist in before/after hours for any day
-  const hasBeforeHours = (agentId: string) => {
+  const hasBeforeHours = (agentId: number) => {
     return days.some((day) => {
       const dayAppointments = getAppointmentsForAgentAndDay(agentId, day);
       return dayAppointments.some(
@@ -82,7 +82,7 @@ export function WeekView() {
     });
   };
 
-  const hasAfterHours = (agentId: string) => {
+  const hasAfterHours = (agentId: number) => {
     return days.some((day) => {
       const dayAppointments = getAppointmentsForAgentAndDay(agentId, day);
       return dayAppointments.some((apt) => {

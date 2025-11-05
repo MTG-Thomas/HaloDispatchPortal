@@ -5,6 +5,10 @@ import { createRoot } from 'react-dom/client';
 import type { Ticket } from '@/types';
 import { TicketDragPreview } from '@/components/tickets/TicketDragPreview';
 
+interface DragInput {
+  event?: { target?: EventTarget | null };
+}
+
 export function useDraggableTicket(ticket: Ticket) {
   const ref = useRef<HTMLTableRowElement>(null);
 
@@ -20,7 +24,8 @@ export function useDraggableTicket(ticket: Ticket) {
       }),
       canDrag: ({ input }) => {
         // Don't start drag if clicking on a link or button
-        const target = input.event?.target as HTMLElement;
+        const dragInput = input as DragInput;
+        const target = dragInput.event?.target as HTMLElement;
         return !target?.closest('a, button');
       },
       onGenerateDragPreview: ({ nativeSetDragImage }) => {

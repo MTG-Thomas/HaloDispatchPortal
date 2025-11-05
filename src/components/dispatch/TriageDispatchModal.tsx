@@ -16,7 +16,7 @@ import { DispatchSection } from './DispatchSection';
 import { useTriageDispatchForm } from '@/hooks/useTriageDispatchForm';
 import { useDispatchStore } from '@/stores/useDispatchStore';
 import { createOrUpdateTicket } from '@/services/halo-api';
-import type { Ticket as HaloTicket } from '@/types/halo';
+import type { Ticket as HaloTicket, CreateTicketPayload } from '@/types/halo';
 
 interface TriageDispatchModalProps {
   open: boolean;
@@ -76,15 +76,16 @@ export function TriageDispatchModal({
 
     setSubmitting(true);
 
+    const isNewTicket = !ticket || !ticket.id || ticket.id <= 0;
+
     try {
       let ticketUpdateSuccess = true;
       let createdOrUpdatedTicketId = ticket?.id;
-      const isNewTicket = !ticket || !ticket.id || ticket.id <= 0;
 
       // Step 1: Create or update ticket if triage fields changed or if creating new
       if (triageHasChanged || isNewTicket) {
         try {
-          const ticketData: Record<string, string | number> = {
+          const ticketData: CreateTicketPayload = {
             tickettype_id: triage.tickettype_id!.toString(),
             summary: triage.summary,
             details_html: ticket?.details || '<p></p>',
@@ -97,11 +98,9 @@ export function TriageDispatchModal({
           };
 
           // Only include ID if updating existing ticket
-          if (!isNewTicket) {
-            ticketData.id = ticket!.id;
-          }
+          const dataWithId = !isNewTicket ? { ...ticketData, id: ticket!.id } : ticketData;
 
-          const result = await createOrUpdateTicket(ticketData);
+          const result = await createOrUpdateTicket(dataWithId);
           // The API returns an array with the created/updated ticket
           createdOrUpdatedTicketId = result[0]?.id;
         } catch (error) {

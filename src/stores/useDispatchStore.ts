@@ -88,7 +88,7 @@ interface DispatchState {
     autoRefreshEnabled: boolean;
     autoRefreshInterval: number;
     lastRefreshTime: Date | null;
-    appointmentRefreshInterval: NodeJS.Timeout | null;
+    appointmentRefreshInterval: ReturnType<typeof setTimeout> | null;
 
     // Global API Error State
     criticalApiError: {
@@ -125,7 +125,7 @@ interface DispatchState {
     updateTicket: (id: string, updates: Partial<Ticket>) => void;
     scheduleTicket: (
         ticketId: string,
-        agentId: string,
+        agentId: number,
         startTime: Date
     ) => void;
     setTicketFilters: (filters: TicketFilters) => void;

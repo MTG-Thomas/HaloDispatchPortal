@@ -50,7 +50,7 @@ export function AgentTeamCombobox() {
     .filter((r) => r.type === 'team')
     .map((r) => r.id);
 
-  const handleAgentToggle = (agentId: string) => {
+  const handleAgentToggle = (agentId: number) => {
     const resource: ResourceSelection = { type: 'agent', id: agentId };
     if (selectedAgentIds.includes(agentId)) {
       removeResourceSelection(resource);

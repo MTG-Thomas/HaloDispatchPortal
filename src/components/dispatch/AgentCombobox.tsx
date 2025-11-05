@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Check, ChevronsUpDown, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -17,7 +17,10 @@ import {
 import { cn } from '@/lib/utils';
 import { getAgents } from '@/services/halo-api';
 import { useDispatchStore } from '@/stores/useDispatchStore';
+import { useConfigStore } from '@/stores/configStore';
+import { AgentAvatar } from '@/components/AgentAvatar';
 import type { HaloAgent } from '@/types/halo';
+import type { Agent } from '@/types';
 
 interface AgentComboboxProps {
   value: number | null;
@@ -54,6 +57,30 @@ export function AgentCombobox({
   const [loading, setLoading] = useState(false);
   const [searchValue, setSearchValue] = useState('');
   const { clientCache } = useDispatchStore();
+  const { config } = useConfigStore();
+
+  // Helper function to convert HaloAgent to Agent for AgentAvatar
+  const convertToAgent = (haloAgent: HaloAgent): Agent => ({
+    id: haloAgent.id,
+    name: haloAgent.name,
+    email: haloAgent.email,
+    initials: haloAgent.initials,
+    color: haloAgent.colour,
+    avatar: haloAgent.agentphotopath,
+    role: haloAgent.jobtitle || '',
+    teamIds: [], // Not needed for avatar display
+    skills: [],
+    workingHours: {
+      monday: { isWorking: false, startTime: '00:00', endTime: '00:00' },
+      tuesday: { isWorking: false, startTime: '00:00', endTime: '00:00' },
+      wednesday: { isWorking: false, startTime: '00:00', endTime: '00:00' },
+      thursday: { isWorking: false, startTime: '00:00', endTime: '00:00' },
+      friday: { isWorking: false, startTime: '00:00', endTime: '00:00' },
+      saturday: { isWorking: false, startTime: '00:00', endTime: '00:00' },
+      sunday: { isWorking: false, startTime: '00:00', endTime: '00:00' },
+    },
+    isActive: !haloAgent.isdisabled,
+  });
 
   // Load agents when component mounts or filters change
   useEffect(() => {
@@ -94,6 +121,11 @@ export function AgentCombobox({
     agents.find((agent) => agent.id === value) ||
     clientCache?.agents.find((agent) => agent.id === value);
 
+  // Convert selected agent to Agent type for AgentAvatar
+  const selectedAgentForAvatar = useMemo(() => {
+    return selectedAgent ? convertToAgent(selectedAgent) : null;
+  }, [selectedAgent]);
+
   return (
     <div className="space-y-1">
       <Popover open={open} onOpenChange={setOpen}>
@@ -108,18 +140,16 @@ export function AgentCombobox({
               error && 'border-red-500'
             )}
           >
-            {selectedAgent && (
-              <div className="flex items-center gap-2">
-                <div
-                  className="flex h-6 w-6 items-center justify-center rounded-full text-xs font-medium text-white"
-                  style={{ backgroundColor: selectedAgent.colour }}
-                >
-                  {selectedAgent.initials}
-                </div>
-                <span className="truncate">{selectedAgent.name}</span>
-              </div>
+            {selectedAgentForAvatar ? (
+              <AgentAvatar
+                agent={selectedAgentForAvatar}
+                size="sm"
+                showName
+                resourceServer={config.resourceServer}
+              />
+            ) : (
+              <span>{placeholder}</span>
             )}
-            {!selectedAgent && <span>{placeholder}</span>}
             <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
           </Button>
         </PopoverTrigger>
@@ -147,34 +177,38 @@ export function AgentCombobox({
               )}
               {!loading && filteredAgents.length > 0 && (
                 <CommandGroup>
-                  {filteredAgents.map((agent) => (
-                    <CommandItem
-                      key={agent.id}
-                      value={agent.id.toString()}
-                      onSelect={() => handleSelect(agent.id)}
-                    >
-                      <Check
-                        className={cn(
-                          'mr-2 h-4 w-4',
-                          value === agent.id ? 'opacity-100' : 'opacity-0'
-                        )}
-                      />
-                      <div
-                        className="mr-2 flex h-6 w-6 items-center justify-center rounded-full text-xs font-medium text-white"
-                        style={{ backgroundColor: agent.colour }}
+                  {filteredAgents.map((agent) => {
+                    const agentForAvatar = convertToAgent(agent);
+                    return (
+                      <CommandItem
+                        key={agent.id}
+                        value={agent.id.toString()}
+                        onSelect={() => handleSelect(agent.id)}
                       >
-                        {agent.initials}
-                      </div>
-                      <div className="flex flex-col">
-                        <span className="font-medium">{agent.name}</span>
-                        {agent.jobtitle && (
-                          <span className="text-xs text-muted-foreground">
-                            {agent.jobtitle}
-                          </span>
-                        )}
-                      </div>
-                    </CommandItem>
-                  ))}
+                        <Check
+                          className={cn(
+                            'mr-2 h-4 w-4',
+                            value === agent.id ? 'opacity-100' : 'opacity-0'
+                          )}
+                        />
+                        <div className="flex items-center gap-2">
+                          <AgentAvatar
+                            agent={agentForAvatar}
+                            size="sm"
+                            resourceServer={config.resourceServer}
+                          />
+                          <div className="flex flex-col">
+                            <span className="font-medium">{agent.name}</span>
+                            {agent.jobtitle && (
+                              <span className="text-xs text-muted-foreground">
+                                {agent.jobtitle}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </CommandItem>
+                    );
+                  })}
                 </CommandGroup>
               )}
             </CommandList>

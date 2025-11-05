@@ -4,17 +4,14 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
-  ContextMenuSub,
-  ContextMenuSubContent,
-  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu';
 import { CompletionDialog } from '@/components/calendar/CompletionDialog';
 import { useDispatchStore } from '@/stores/useDispatchStore';
 import { useConfigStore } from '@/stores/configStore';
-import { CheckCircle, XCircle, Clock, Trash2, Play, ExternalLink, FileText } from 'lucide-react';
+import { CheckCircle, Trash2, ExternalLink, FileText } from 'lucide-react';
 import { startOfWeek, endOfWeek, startOfMonth, endOfMonth } from 'date-fns';
-import type { Appointment, AppointmentStatus } from '@/types';
+import type { Appointment } from '@/types';
 
 interface AppointmentContextMenuProps {
   appointment: Appointment;
@@ -22,20 +19,9 @@ interface AppointmentContextMenuProps {
 }
 
 export function AppointmentContextMenu({ appointment, children }: AppointmentContextMenuProps) {
-  const { updateAppointment, deleteAppointment, updateTicket, createOrUpdateAppointment, calendarView, selectedDate, loadAppointments } = useDispatchStore();
+  const { deleteAppointment, updateTicket, createOrUpdateAppointment, calendarView, selectedDate, loadAppointments } = useDispatchStore();
   const { config } = useConfigStore();
   const [isCompletionDialogOpen, setIsCompletionDialogOpen] = useState(false);
-
-  const handleStatusChange = (status: AppointmentStatus) => {
-    updateAppointment(appointment.id, { status });
-
-    // Also update the ticket status if completing
-    if (status === 'completed') {
-      updateTicket(appointment.ticketId, { status: 'resolved' });
-    } else if (status === 'cancelled') {
-      updateTicket(appointment.ticketId, { status: 'on_hold' });
-    }
-  };
 
   const handleDelete = () => {
     if (confirm('Are you sure you want to delete this appointment?')) {
@@ -112,26 +98,6 @@ export function AppointmentContextMenu({ appointment, children }: AppointmentCon
     await loadAppointments(startDate, endDate);
   };
 
-  const getStatusIcon = (status: AppointmentStatus) => {
-    switch (status) {
-      case 'scheduled':
-        return <Clock className="h-4 w-4" />;
-      case 'in_progress':
-        return <Play className="h-4 w-4" />;
-      case 'completed':
-        return <CheckCircle className="h-4 w-4" />;
-      case 'cancelled':
-        return <XCircle className="h-4 w-4" />;
-    }
-  };
-
-  const statusLabels: Record<AppointmentStatus, string> = {
-    scheduled: 'Scheduled',
-    in_progress: 'In Progress',
-    completed: 'Completed',
-    cancelled: 'Cancelled',
-  };
-
   return (
     <>
       <ContextMenu>
@@ -153,35 +119,6 @@ export function AppointmentContextMenu({ appointment, children }: AppointmentCon
           </ContextMenuItem>
 
           <ContextMenuSeparator />
-
-          <ContextMenuSub>
-            <ContextMenuSubTrigger>
-              <Clock className="h-4 w-4 mr-2" />
-              Change Status
-            </ContextMenuSubTrigger>
-            <ContextMenuSubContent>
-              {Object.entries(statusLabels).map(([status, label]) => (
-                <ContextMenuItem
-                  key={status}
-                  onClick={() => handleStatusChange(status as AppointmentStatus)}
-                  disabled={appointment.status === status}
-                >
-                  {getStatusIcon(status as AppointmentStatus)}
-                  <span className="ml-2">{label}</span>
-                </ContextMenuItem>
-              ))}
-            </ContextMenuSubContent>
-          </ContextMenuSub>
-
-          <ContextMenuSeparator />
-
-          <ContextMenuItem
-            onClick={() => handleStatusChange('in_progress')}
-            disabled={appointment.status === 'in_progress'}
-          >
-            <Play className="h-4 w-4 mr-2" />
-            Start Work
-          </ContextMenuItem>
 
           <ContextMenuItem
             onClick={handleMarkDone}

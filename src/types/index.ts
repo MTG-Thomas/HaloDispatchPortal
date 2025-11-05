@@ -121,7 +121,7 @@ export type CalendarView = 'day' | 'week5' | 'week7' | 'month';
 // Resource Selection
 export interface ResourceSelection {
   type: 'agent' | 'team';
-  id: string;
+  id: string | number; // Agents use number IDs, teams use string IDs
 }
 
 // Calendar Event (unified view of appointments)

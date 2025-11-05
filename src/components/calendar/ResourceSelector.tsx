@@ -19,7 +19,7 @@ export function ResourceSelector() {
 
   const visibleAgents = getVisibleAgents();
 
-  const isAgentSelected = (agentId: string) =>
+  const isAgentSelected = (agentId: number) =>
     selectedResources.some((r) => r.type === 'agent' && r.id === agentId);
 
   const isTeamSelected = (teamId: string) =>

@@ -4,14 +4,21 @@ import { useDispatchStore } from '@/stores/useDispatchStore';
 
 // Error class for API errors
 export class ApiError extends Error {
+  status: number;
+  statusText: string;
+  isCritical: boolean;
+
   constructor(
-    public status: number,
-    public statusText: string,
+    status: number,
+    statusText: string,
     message?: string,
-    public isCritical: boolean = false
+    isCritical: boolean = false
   ) {
     super(message || `API Error: ${status} ${statusText}`);
     this.name = 'ApiError';
+    this.status = status;
+    this.statusText = statusText;
+    this.isCritical = isCritical;
   }
 }
 
@@ -173,8 +180,8 @@ export function resetCriticalErrorFlag() {
 /**
  * Make a GET request
  */
-export async function get<T>(endpoint: string, params?: Record<string, string | number | boolean>): Promise<T> {
-  const queryString = params ? `?${buildQueryString(params)}` : '';
+export async function get<T>(endpoint: string, params?: Record<string, string | number | boolean | undefined> | object): Promise<T> {
+  const queryString = params ? `?${buildQueryString(params as Record<string, string | number | boolean | undefined>)}` : '';
   return apiRequest<T>(`${endpoint}${queryString}`, {
     method: 'GET',
   });
@@ -212,7 +219,7 @@ export async function del<T>(endpoint: string): Promise<T> {
 /**
  * Build a query string from an object
  */
-function buildQueryString(params: Record<string, string | number | boolean>): string {
+function buildQueryString(params: Record<string, string | number | boolean | undefined>): string {
   const searchParams = new URLSearchParams();
 
   Object.entries(params).forEach(([key, value]) => {

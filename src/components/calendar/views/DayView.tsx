@@ -44,7 +44,7 @@ export function DayView() {
   });
 
   // Helper to get appointments for a specific agent
-  const getAppointmentsForAgent = (agentId: string) => {
+  const getAppointmentsForAgent = (agentId: number) => {
     return dayAppointments.filter((apt) => apt.agentId === agentId);
   };
 

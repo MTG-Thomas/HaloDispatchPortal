@@ -18,6 +18,10 @@ import { draggable } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
 import { dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
 import type { ColumnConfig } from '@/stores/preferencesStore';
 
+interface DragInput {
+  event?: { target?: EventTarget | null };
+}
+
 interface SortableHeaderProps {
   column: ColumnConfig;
   onReorder: (draggedId: string, targetId: string) => void;
@@ -95,7 +99,8 @@ function SortableHeader({ column, onReorder, onResize }: SortableHeaderProps) {
       }),
       canDrag: ({ input }) => {
         // Don't start drag if clicking on resize handle
-        const target = input.event?.target as HTMLElement;
+        const dragInput = input as DragInput;
+        const target = dragInput.event?.target as HTMLElement;
         return !target?.closest('[data-resize-handle]');
       },
       onDragStart: () => {
