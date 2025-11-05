@@ -20,46 +20,50 @@ export default defineConfig({
 
     rollupOptions: {
       output: {
+        // Ensure proper chunk loading order
+        chunkFileNames: 'assets/[name]-[hash].js',
+
         // Manual chunk splitting for better caching
         manualChunks: (id) => {
-          // React core libraries
-          if (id.includes('node_modules/react') || id.includes('node_modules/react-dom')) {
-            return 'react-vendor';
+          // React, React-DOM, and React-dependent libraries stay together
+          // Let Vite handle React automatically to ensure proper dependency order
+          if (id.includes('node_modules/react') ||
+              id.includes('node_modules/react-dom') ||
+              id.includes('node_modules/react-router') ||
+              id.includes('node_modules/scheduler')) {
+            return 'vendor-react';
           }
 
-          // React Router
-          if (id.includes('node_modules/react-router-dom') || id.includes('node_modules/react-router')) {
-            return 'router';
-          }
-
-          // Radix UI components (shadcn/ui base)
+          // UI components that depend on React (Radix UI)
+          // These will load after vendor-react automatically
           if (id.includes('node_modules/@radix-ui')) {
-            return 'ui-components';
+            return 'vendor-ui';
           }
 
           // Date utilities
           if (id.includes('node_modules/date-fns')) {
-            return 'date-utils';
+            return 'vendor-date';
           }
 
           // Icons
           if (id.includes('node_modules/lucide-react')) {
-            return 'icons';
+            return 'vendor-icons';
           }
 
           // Drag and drop library
-          if (id.includes('node_modules/@atlaskit')) {
-            return 'drag-drop';
+          if (id.includes('node_modules/@atlaskit') ||
+              id.includes('node_modules/@atlaskit/pragmatic-drag-and-drop')) {
+            return 'vendor-dnd';
           }
 
           // State management
           if (id.includes('node_modules/zustand')) {
-            return 'state';
+            return 'vendor-state';
           }
 
-          // Other vendor code
+          // All other vendor dependencies
           if (id.includes('node_modules')) {
-            return 'vendor';
+            return 'vendor-misc';
           }
         },
       },
