@@ -20,41 +20,33 @@ export default defineConfig({
 
     rollupOptions: {
       output: {
-        // Manual chunk splitting for better caching
+        // Conservative manual chunk splitting to avoid circular dependencies
         manualChunks: (id) => {
-          // CRITICAL: Bundle React with all React-dependent libraries
-          // to avoid race conditions in chunk loading
+          // Only split large, stable libraries that rarely change
+          // Everything else stays together to avoid dependency issues
+
+          // React ecosystem - bundle everything React-related together
           if (id.includes('node_modules/react') ||
               id.includes('node_modules/react-dom') ||
               id.includes('node_modules/react-router') ||
               id.includes('node_modules/@radix-ui') ||
               id.includes('node_modules/scheduler')) {
-            return 'vendor-react';
+            return 'vendor';
           }
 
-          // Date utilities - safe to separate (no React dependency)
+          // Date utilities - large and stable
           if (id.includes('node_modules/date-fns')) {
-            return 'vendor-date';
+            return 'vendor';
           }
 
-          // Icons - safe to separate (tree-shaken, minimal React usage)
+          // Icons - large and stable
           if (id.includes('node_modules/lucide-react')) {
-            return 'vendor-icons';
+            return 'vendor';
           }
 
-          // Drag and drop library
-          if (id.includes('node_modules/@atlaskit')) {
-            return 'vendor-dnd';
-          }
-
-          // State management - safe to separate
-          if (id.includes('node_modules/zustand')) {
-            return 'vendor-state';
-          }
-
-          // All other vendor dependencies
+          // Everything else goes into vendor (no micro-chunking)
           if (id.includes('node_modules')) {
-            return 'vendor-misc';
+            return 'vendor';
           }
         },
       },

@@ -61,7 +61,7 @@ const Login: React.FC = () => {
                 <CardHeader className="text-center">
                     <div className="mx-auto mb-4 flex items-center justify-center">
                         <img
-                            src="/public/logo.svg"
+                            src="/logo.svg"
                             alt="Halo Logo"
                             className="h-12 w-12"
                         />
