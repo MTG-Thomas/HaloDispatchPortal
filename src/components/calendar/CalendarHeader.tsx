@@ -1,18 +1,24 @@
 import { format, addDays, subDays, startOfWeek, endOfWeek, addWeeks, subWeeks, addMonths, subMonths, startOfMonth, endOfMonth } from 'date-fns';
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Moon, Sun, LogOut, RefreshCw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Moon, Sun, LogOut, RefreshCw, ZoomIn } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { useDispatchStore } from '@/stores/useDispatchStore';
+import { usePreferencesStore } from '@/stores/preferencesStore';
 import { useTheme } from '@/contexts/ThemeContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { TicketAreaSelector } from '@/components/halo/TicketAreaSelector';
-import { ListCombobox } from '@/components/halo/ListCombobox';
-import { AgentTeamCombobox } from './AgentTeamCombobox';
+import { FilterPopover } from './FilterPopover';
 import { cn } from '@/lib/utils';
 import type { CalendarView } from '@/types';
 
 export function CalendarHeader() {
-  const { calendarView, selectedDate, setCalendarView, setSelectedDate, selectedTicketAreaId, appointmentsLoading, loadAppointments } = useDispatchStore();
+  const { calendarView, selectedDate, setCalendarView, setSelectedDate, appointmentsLoading, loadAppointments } = useDispatchStore();
+  const { calendarZoomLevel, setCalendarZoomLevel } = usePreferencesStore();
   const { theme, toggleTheme } = useTheme();
   const { logout } = useAuth();
 
@@ -94,8 +100,8 @@ export function CalendarHeader() {
   };
 
   return (
-    <div className="border-b bg-card p-4 space-y-4">
-      {/* Top Row: Navigation and View Controls */}
+    <div className="border-b bg-card p-4">
+      {/* Single Row: Navigation, Filter, View Controls, Actions */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           {/* Date Navigation */}
@@ -125,6 +131,9 @@ export function CalendarHeader() {
             <CalendarIcon className="h-4 w-4" />
             {getDateRangeText()}
           </div>
+
+          {/* Filter Button */}
+          <FilterPopover />
         </div>
 
         {/* View Switcher and Actions */}
@@ -137,6 +146,46 @@ export function CalendarHeader() {
               <TabsTrigger value="month">Month</TabsTrigger>
             </TabsList>
           </Tabs>
+
+          {/* Zoom Level Selector */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-9 gap-1"
+                aria-label="Calendar zoom level"
+              >
+                <ZoomIn className="h-4 w-4" />
+                {calendarZoomLevel}%
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => setCalendarZoomLevel(100)}>
+                <span className={cn(calendarZoomLevel === 100 && 'font-bold')}>100%</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setCalendarZoomLevel(75)}>
+                <span className={cn(calendarZoomLevel === 75 && 'font-bold')}>75%</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setCalendarZoomLevel(50)}>
+                <span className={cn(calendarZoomLevel === 50 && 'font-bold')}>50%</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setCalendarZoomLevel(25)}>
+                <span className={cn(calendarZoomLevel === 25 && 'font-bold')}>25%</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Refresh Button */}
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={handleRefreshAppointments}
+            disabled={appointmentsLoading}
+            aria-label="Refresh appointments"
+          >
+            <RefreshCw className={cn('h-4 w-4', appointmentsLoading && 'animate-spin')} />
+          </Button>
 
           {/* Dark Mode Toggle */}
           <Button
@@ -162,30 +211,6 @@ export function CalendarHeader() {
             <LogOut className="h-4 w-4" />
           </Button>
         </div>
-      </div>
-
-      {/* Bottom Row: Ticket Area, Lists, Agents/Teams */}
-      <div className="flex items-center gap-3">
-        <TicketAreaSelector />
-        {selectedTicketAreaId && (
-          <>
-            <div className="h-6 w-px bg-border" />
-            <ListCombobox />
-          </>
-        )}
-        <div className="h-6 w-px bg-border" />
-        <AgentTeamCombobox />
-        <div className="flex-1" />
-        <Button
-          variant="outline"
-          size="icon"
-          onClick={handleRefreshAppointments}
-          disabled={appointmentsLoading}
-          className="h-8 w-8"
-          title="Refresh appointments"
-        >
-          <RefreshCw className={cn('h-3.5 w-3.5', appointmentsLoading && 'animate-spin')} />
-        </Button>
       </div>
     </div>
   );

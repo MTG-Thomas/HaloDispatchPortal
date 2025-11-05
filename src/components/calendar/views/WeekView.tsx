@@ -2,9 +2,11 @@ import { useEffect, useState } from 'react';
 import { startOfWeek, addDays, format, isSameDay } from 'date-fns';
 import { useDispatchStore } from '@/stores/useDispatchStore';
 import { usePreferencesStore } from '@/stores/preferencesStore';
+import { useConfigStore } from '@/stores/configStore';
 import { UtilizationBar } from '../UtilizationBar';
 import { CalendarColumn } from '../CalendarColumn';
 import { TimeLabelsColumn } from '../TimeLabelsColumn';
+import { AgentAvatar } from '@/components/AgentAvatar';
 import { cn } from '@/lib/utils';
 import { DEFAULT_CALENDAR_CONFIG } from '@/lib/calendarConfig';
 import type { Appointment } from '@/types';
@@ -21,12 +23,14 @@ export function WeekView() {
     getAppointmentsForDateRange,
     loadAppointments,
   } = useDispatchStore();
+  const { config } = useConfigStore();
 
   const selectedResources = usePreferencesStore((state) => state.selectedResources);
+  const calendarZoomLevel = usePreferencesStore((state) => state.calendarZoomLevel);
 
   const visibleAgents = getVisibleAgents();
   const daysToShow = calendarView === 'week5' ? 5 : 7;
-  const config = DEFAULT_CALENDAR_CONFIG;
+  const calendarConfig = DEFAULT_CALENDAR_CONFIG;
 
   // Get week start (Monday)
   const weekStart = startOfWeek(selectedDate, { weekStartsOn: 1 });
@@ -73,7 +77,7 @@ export function WeekView() {
     return days.some((day) => {
       const dayAppointments = getAppointmentsForAgentAndDay(agentId, day);
       return dayAppointments.some(
-        (apt) => !isAllDayAppointment(apt) && apt.startTime.getHours() < config.dayStartHour
+        (apt) => !isAllDayAppointment(apt) && apt.startTime.getHours() < calendarConfig.dayStartHour
       );
     });
   };
@@ -86,7 +90,7 @@ export function WeekView() {
         const endHour = apt.endTime.getHours();
         const endMinute = apt.endTime.getMinutes();
         // Only show after hours if appointment ends after dayEndHour (5 PM = 17:00)
-        return endHour > config.dayEndHour || (endHour === config.dayEndHour && endMinute > 0);
+        return endHour > calendarConfig.dayEndHour || (endHour === calendarConfig.dayEndHour && endMinute > 0);
       });
     });
   };
@@ -117,8 +121,9 @@ export function WeekView() {
                 isSameDay(day, new Date()) && 'bg-primary/5'
               )}
             >
-              <div className="font-medium">{format(day, 'EEE')}</div>
-              <div className="text-sm text-muted-foreground">{format(day, 'M/d')}</div>
+              <div className="font-medium text-sm">
+                {format(day, 'EEE')} <span className="text-muted-foreground">{format(day, 'M/d')}</span>
+              </div>
             </div>
           ))}
         </div>
@@ -130,16 +135,19 @@ export function WeekView() {
             <div className="flex border-b bg-muted/30">
               {/* Agent Info Column */}
               <div className="w-48 flex-shrink-0 border-r p-2 flex items-center gap-2">
-                <div
-                  className="h-3 w-3 rounded-full flex-shrink-0"
-                  style={{ backgroundColor: agent.color }}
+                <AgentAvatar
+                  agent={agent}
+                  size="sm"
+                  showName
+                  resourceServer={config.resourceServer}
                 />
-                <span className="text-sm font-medium truncate">{agent.name}</span>
               </div>
               {/* Utilization Columns */}
               {days.map((day) => (
-                <div key={day.toISOString()} className="flex-1 border-r p-1">
-                  <UtilizationBar agentId={agent.id} date={day} />
+                <div key={day.toISOString()} className="flex-1 border-r p-1 flex items-center justify-center">
+                  <div className="w-full">
+                    <UtilizationBar agentId={agent.id} date={day} />
+                  </div>
                 </div>
               ))}
             </div>
@@ -148,13 +156,14 @@ export function WeekView() {
             <div className="flex">
               {/* Time labels column */}
               <TimeLabelsColumn
-                config={config}
+                config={calendarConfig}
                 hasBeforeHours={hasBeforeHours(agent.id)}
                 hasAfterHours={hasAfterHours(agent.id)}
                 className="w-48 flex-shrink-0"
                 allDayHeight={allDayHeight}
                 beforeHoursHeight={beforeHoursHeight}
                 afterHoursHeight={afterHoursHeight}
+                zoomLevel={calendarZoomLevel}
               />
 
               {/* Day Columns */}
@@ -166,7 +175,7 @@ export function WeekView() {
                     agentId={agent.id}
                     date={day}
                     appointments={dayAppointments}
-                    config={config}
+                    config={calendarConfig}
                     isToday={isSameDay(day, new Date())}
                     allDayHeight={allDayHeight}
                     beforeHoursHeight={beforeHoursHeight}
@@ -176,6 +185,7 @@ export function WeekView() {
                     onAfterHoursHeightChange={setAfterHoursHeight}
                     showBeforeHours={hasBeforeHours(agent.id)}
                     showAfterHours={hasAfterHours(agent.id)}
+                    zoomLevel={calendarZoomLevel}
                   />
                 );
               })}

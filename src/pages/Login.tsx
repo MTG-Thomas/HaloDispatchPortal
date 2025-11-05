@@ -1,5 +1,5 @@
-import React from "react";
-import { Navigate } from "react-router-dom";
+import React, { useEffect } from "react";
+import { Navigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import {
     Card,
@@ -15,7 +15,30 @@ import { Calendar, Shield, Zap } from "lucide-react";
 
 const Login: React.FC = () => {
     const { startAuth, isLoading, isAuthenticated } = useAuth();
-    const { config, isLoaded, isConfigured } = useConfig();
+    const { config, isLoaded, isConfigured, saveConfig } = useConfig();
+    const [searchParams] = useSearchParams();
+
+    // Read and apply query parameters for config auto-population
+    useEffect(() => {
+        const tenant = searchParams.get('tenant');
+        const resourceServer = searchParams.get('resourceServer');
+        const authServer = searchParams.get('authServer');
+        const clientId = searchParams.get('clientId');
+        const redirectUri = searchParams.get('redirectUri');
+
+        // Only apply if at least one parameter is present
+        if (tenant || resourceServer || authServer || clientId || redirectUri) {
+            const configUpdates: Record<string, string> = {};
+
+            if (tenant) configUpdates.tenant = tenant;
+            if (resourceServer) configUpdates.resourceServer = resourceServer;
+            if (authServer) configUpdates.authServer = authServer;
+            if (clientId) configUpdates.clientId = clientId;
+            if (redirectUri) configUpdates.redirectUri = redirectUri;
+
+            saveConfig(configUpdates);
+        }
+    }, [searchParams, saveConfig]);
 
     // Redirect to main app if already authenticated
     if (isAuthenticated) {

@@ -14,6 +14,11 @@ export interface ColumnConfig {
 }
 
 /**
+ * Calendar zoom level options
+ */
+export type CalendarZoomLevel = 100 | 75 | 50 | 25;
+
+/**
  * User Preferences State
  * Persists user preferences using Zustand persist middleware
  */
@@ -24,6 +29,10 @@ interface PreferencesState {
   addResourceSelection: (resource: ResourceSelection) => void;
   removeResourceSelection: (resource: ResourceSelection) => void;
   toggleResourceSelection: (resource: ResourceSelection) => void;
+
+  // Calendar Preferences
+  calendarZoomLevel: CalendarZoomLevel;
+  setCalendarZoomLevel: (zoomLevel: CalendarZoomLevel) => void;
 
   // Column Ordering
   ticketListColumns: ColumnConfig[];
@@ -64,6 +73,7 @@ export const usePreferencesStore = create<PreferencesState>()(
     (set, get) => ({
       // Initial state
       selectedResources: [],
+      calendarZoomLevel: 100,
       ticketListColumns: defaultColumns,
 
       // Agent/Team Selection Actions
@@ -98,6 +108,9 @@ export const usePreferencesStore = create<PreferencesState>()(
             };
           }
         }),
+
+      // Calendar Preferences Actions
+      setCalendarZoomLevel: (zoomLevel) => set({ calendarZoomLevel: zoomLevel }),
 
       // Column Ordering Actions
       setTicketListColumns: (columns) => set({ ticketListColumns: columns }),
@@ -148,6 +161,7 @@ export const usePreferencesStore = create<PreferencesState>()(
       resetAll: () =>
         set({
           selectedResources: [],
+          calendarZoomLevel: 100,
           ticketListColumns: defaultColumns,
         }),
     }),
@@ -155,6 +169,7 @@ export const usePreferencesStore = create<PreferencesState>()(
       name: 'halo-dispatch-preferences',
       partialize: (state) => ({
         selectedResources: state.selectedResources,
+        calendarZoomLevel: state.calendarZoomLevel,
         ticketListColumns: state.ticketListColumns,
       }),
     }

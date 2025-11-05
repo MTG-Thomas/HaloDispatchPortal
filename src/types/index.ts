@@ -72,6 +72,7 @@ export interface Agent {
   email: string;
   phone?: string;
   avatar?: string;
+  initials: string; // Agent initials for avatar placeholder
   role: string;
   teamIds: string[];
   skills: string[];
@@ -111,6 +112,7 @@ export interface Team {
   memberIds: number[]; // Changed from string[] to number[]
   color: string; // for calendar display
   isActive: boolean;
+  sequence: number; // Sort order from Halo API
 }
 
 // Calendar View Types

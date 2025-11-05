@@ -16,6 +16,8 @@ import {
   EyeOff,
   CheckCircle,
   RotateCcw,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { useConfig } from '@/hooks/useConfig';
 import type { HaloConfig } from '@/hooks/useConfig';
@@ -25,6 +27,7 @@ export const ConfigDialog: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [localConfig, setLocalConfig] = useState<HaloConfig>(config);
   const [showClientSecret, setShowClientSecret] = useState(false);
+  const [urlCopied, setUrlCopied] = useState(false);
 
   // Update localConfig when config changes
   useEffect(() => {
@@ -78,6 +81,28 @@ export const ConfigDialog: React.FC = () => {
     }
   };
 
+  const handleCopyConfigUrl = async () => {
+    const params = new URLSearchParams();
+
+    if (config.tenant) params.set('tenant', config.tenant);
+    if (config.resourceServer) params.set('resourceServer', config.resourceServer);
+    if (config.authServer) params.set('authServer', config.authServer);
+    if (config.clientId) params.set('clientId', config.clientId);
+    if (config.redirectUri) params.set('redirectUri', config.redirectUri);
+
+    const baseUrl = window.location.origin;
+    const loginPath = '/login';
+    const configUrl = `${baseUrl}${loginPath}?${params.toString()}`;
+
+    try {
+      await navigator.clipboard.writeText(configUrl);
+      setUrlCopied(true);
+      setTimeout(() => setUrlCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy URL:', err);
+    }
+  };
+
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
       <DialogTrigger asChild>
@@ -92,9 +117,29 @@ export const ConfigDialog: React.FC = () => {
         <DialogHeader>
           <DialogTitle>Halo Configuration</DialogTitle>
           {isConfigured && (
-            <div className="text-sm text-green-600 flex items-center gap-2">
-              <CheckCircle className="h-4 w-4" />
-              Configuration complete! You can now log in.
+            <div className="space-y-2">
+              <div className="text-sm text-green-600 flex items-center gap-2">
+                <CheckCircle className="h-4 w-4" />
+                Configuration complete! You can now log in.
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCopyConfigUrl}
+                className="w-full"
+              >
+                {urlCopied ? (
+                  <>
+                    <Check className="h-4 w-4 mr-2" />
+                    URL Copied!
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-4 w-4 mr-2" />
+                    Copy Config URL
+                  </>
+                )}
+              </Button>
             </div>
           )}
         </DialogHeader>

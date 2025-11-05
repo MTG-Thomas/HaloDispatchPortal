@@ -25,6 +25,7 @@ import {
     getUtcOffset,
     getAppointments,
     getAppointmentTypes,
+    getTeams,
     createOrUpdateAppointment as apiCreateOrUpdateAppointment,
 } from "@/services/halo-api";
 import { enrichTicket } from "@/utils/enrich-ticket";
@@ -64,6 +65,7 @@ interface DispatchState {
     haloAppointments: HaloAppointment[];
 
     // Loading States
+    isInitialLoad: boolean; // True until first successful load of all data
     clientCacheLoading: boolean;
     viewListsLoading: boolean;
     ticketsLoading: boolean;
@@ -136,7 +138,7 @@ interface DispatchState {
 
     // ===== Halo PSA Actions =====
     // Client Cache
-    loadClientCacheInternal: (cache: ClientCache) => void;
+    loadClientCacheInternal: (cache: ClientCache) => Promise<void>;
     loadClientCache: () => Promise<void>;
 
     // Ticket Area
@@ -156,6 +158,9 @@ interface DispatchState {
     loadAppointments: (startDate: Date, endDate: Date) => Promise<void>;
     startAppointmentAutoRefresh: () => void;
     stopAppointmentAutoRefresh: () => void;
+
+    // Initial Load
+    completeInitialLoad: () => void;
 
     // Pagination
     setPage: (page: number) => void;
@@ -195,6 +200,7 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
     ticketsByList: new Map(),
     appointmentTypes: [],
     haloAppointments: [],
+    isInitialLoad: true,
     clientCacheLoading: false,
     viewListsLoading: false,
     ticketsLoading: false,
@@ -599,7 +605,7 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
     // ===== Halo PSA Action Implementations =====
 
     // Internal helper to process ClientCache data
-    loadClientCacheInternal: (cache: ClientCache) => {
+    loadClientCacheInternal: async (cache: ClientCache) => {
         // Map Halo agents to Agent type
         const agents = cache.agents
             .filter((a) => !a.isdisabled && !a.isapiagent)
@@ -621,6 +627,7 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
                     name: haloAgent.name,
                     email: haloAgent.email,
                     avatar: haloAgent.agentphotopath,
+                    initials: haloAgent.initials || "",
                     role: haloAgent.jobtitle || "Agent",
                     teamIds: [], // Will be filled after teams are created
                     skills: [],
@@ -638,35 +645,40 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
                 };
             });
 
-        // Create teams from agent team names
-        const teamMap = new Map<string, Set<number>>();
+        // Fetch teams from API
+        const haloTeams = await getTeams();
+
+        // Create map of team name to member IDs from agents
+        const teamMemberMap = new Map<string, Set<number>>();
         cache.agents
             .filter((a) => !a.isdisabled && !a.isapiagent && a.team)
             .forEach((agent) => {
                 const teamName = agent.team;
-                if (!teamMap.has(teamName)) {
-                    teamMap.set(teamName, new Set());
+                if (!teamMemberMap.has(teamName)) {
+                    teamMemberMap.set(teamName, new Set());
                 }
-                teamMap.get(teamName)!.add(agent.id);
+                teamMemberMap.get(teamName)!.add(agent.id);
             });
 
-        const teams: Team[] = Array.from(teamMap.entries()).map(
-            ([name, memberIds], index) => {
+        // Map Halo teams to our Team interface
+        const teams: Team[] = haloTeams
+            .map((haloTeam) => {
                 // Generate stable team ID from team name (slugify)
-                const teamId = `team-${name
+                const teamId = `team-${haloTeam.name
                     .toLowerCase()
                     .replace(/[^a-z0-9]+/g, "-")
                     .replace(/^-|-$/g, "")}`;
 
                 return {
                     id: teamId,
-                    name,
-                    memberIds: Array.from(memberIds),
-                    color: `hsl(${(index * 137.5) % 360}, 70%, 50%)`, // Generate colors
-                    isActive: true,
+                    name: haloTeam.name,
+                    memberIds: Array.from(teamMemberMap.get(haloTeam.name) || []),
+                    color: `hsl(${(haloTeam.sequence * 137.5) % 360}, 70%, 50%)`,
+                    isActive: !haloTeam.inactive,
+                    sequence: haloTeam.sequence,
                 };
-            }
-        );
+            })
+            .sort((a, b) => a.sequence - b.sequence); // Sort by sequence
 
         // Update agents with their team IDs
         const teamByName = new Map(teams.map((t) => [t.name, t.id]));
@@ -742,7 +754,7 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
                     }
 
                     // Success! Continue with the retry cache
-                    return get().loadClientCacheInternal(retryCache);
+                    return await get().loadClientCacheInternal(retryCache);
                 } else {
                     // Token refresh failed - clear tokens and force re-login
                     console.error("Token refresh failed, forcing re-login");
@@ -755,7 +767,7 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
             }
 
             // Process the valid cache
-            get().loadClientCacheInternal(cache);
+            await get().loadClientCacheInternal(cache);
         } catch (error) {
             console.error("Failed to load client cache:", error);
             set({
@@ -868,22 +880,47 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
 
             // Store tickets by list
             const newTicketsByList = new Map<number, HaloTicket[]>();
-            let totalCount = 0;
 
-            results.forEach(({ listId, tickets, recordCount }) => {
+            results.forEach(({ listId, tickets }) => {
                 newTicketsByList.set(listId, tickets);
-                totalCount += recordCount;
             });
 
-            // Merge all tickets and add list information
-            const allTickets = results.flatMap(({ listId, tickets }) => {
+            // Merge all tickets and deduplicate by ticket ID
+            const ticketMap = new Map<number, {
+                ticket: HaloTicket;
+                listIds: number[];
+                listNames: string[];
+            }>();
+
+            results.forEach(({ listId, tickets }) => {
                 const list = state.viewLists.find((l) => l.id === listId);
-                return tickets.map((ticket) => ({
-                    ...ticket,
-                    _listId: listId,
-                    _listName: list?.name || `List ${listId}`,
-                }));
+                const listName = list?.name || `List ${listId}`;
+
+                tickets.forEach((ticket) => {
+                    const existing = ticketMap.get(ticket.id);
+                    if (existing) {
+                        // Ticket already exists, add this list to it
+                        if (!existing.listIds.includes(listId)) {
+                            existing.listIds.push(listId);
+                            existing.listNames.push(listName);
+                        }
+                    } else {
+                        // New ticket
+                        ticketMap.set(ticket.id, {
+                            ticket,
+                            listIds: [listId],
+                            listNames: [listName],
+                        });
+                    }
+                });
             });
+
+            // Convert map to array and add combined list information
+            const allTickets = Array.from(ticketMap.values()).map(({ ticket, listIds, listNames }) => ({
+                ...ticket,
+                _listId: listIds[0], // Use first list ID for compatibility
+                _listName: listNames.join(', '), // Comma-separated list names
+            }));
 
             // Enrich tickets with lookup data
             const enrichedTickets = allTickets.map((ticket) =>
@@ -893,7 +930,7 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
             set({
                 ticketsByList: newTicketsByList,
                 haloTickets: enrichedTickets,
-                totalRecords: totalCount,
+                totalRecords: enrichedTickets.length, // Use deduplicated count
                 ticketsLoading: false,
                 ticketsRefreshing: false,
                 lastRefreshTime: new Date(),
@@ -1167,5 +1204,10 @@ export const useDispatchStore = create<DispatchState>((set, get) => ({
             clearInterval(state.appointmentRefreshInterval);
             set({ appointmentRefreshInterval: null });
         }
+    },
+
+    // Complete Initial Load
+    completeInitialLoad: () => {
+        set({ isInitialLoad: false });
     },
 }));

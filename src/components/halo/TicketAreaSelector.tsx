@@ -1,6 +1,5 @@
 import { useEffect } from 'react';
 import { useDispatchStore } from '@/stores/useDispatchStore';
-import { LoadingScreen } from '@/components/LoadingScreen';
 import {
   Select,
   SelectContent,
@@ -56,10 +55,6 @@ export function TicketAreaSelector() {
     setSelectedTicketArea(areaId);
     localStorage.setItem('halo-selected-ticket-area', value);
   };
-
-  if (clientCacheLoading) {
-    return <LoadingScreen message="Loading configuration..." />;
-  }
 
   if (!clientCache || clientCache.ticketareas.length === 0) {
     return null;

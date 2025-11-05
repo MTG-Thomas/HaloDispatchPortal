@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Check, ChevronsUpDown, Users as UsersIcon } from 'lucide-react';
 import { useDispatchStore } from '@/stores/useDispatchStore';
 import { usePreferencesStore } from '@/stores/preferencesStore';
+import { useConfigStore } from '@/stores/configStore';
 import { Button } from '@/components/ui/button';
 import {
   Command,
@@ -17,6 +18,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
+import { AgentAvatar } from '@/components/AgentAvatar';
 import { cn } from '@/lib/utils';
 import type { ResourceSelection } from '@/types';
 
@@ -28,6 +30,7 @@ import type { ResourceSelection } from '@/types';
  */
 export function AgentTeamCombobox() {
   const { agents, teams } = useDispatchStore();
+  const { config } = useConfigStore();
   const {
     selectedResources,
     addResourceSelection,
@@ -112,9 +115,11 @@ export function AgentTeamCombobox() {
     return parts.join(', ');
   };
 
-  // Get active agents not in any selected team
+  // Get active agents and teams, sorted appropriately
   const activeAgents = agents.filter((a) => a.isActive);
-  const activeTeams = teams.filter((t) => t.isActive);
+  const activeTeams = teams
+    .filter((t) => t.isActive)
+    .sort((a, b) => a.sequence - b.sequence); // Sort by sequence
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -199,13 +204,12 @@ export function AgentTeamCombobox() {
                       selectedAgentIds.includes(agent.id) ? 'opacity-100' : 'opacity-0'
                     )}
                   />
-                  <div className="flex items-center gap-2">
-                    <div
-                      className="w-3 h-3 rounded-full"
-                      style={{ backgroundColor: agent.color }}
-                    />
-                    <span>{agent.name}</span>
-                  </div>
+                  <AgentAvatar
+                    agent={agent}
+                    size="xs"
+                    showName
+                    resourceServer={config.resourceServer}
+                  />
                 </CommandItem>
               ))}
             </CommandGroup>

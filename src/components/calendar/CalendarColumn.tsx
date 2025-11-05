@@ -22,6 +22,7 @@ interface CalendarColumnProps {
   onAfterHoursHeightChange: (height: number) => void;
   showBeforeHours?: boolean;
   showAfterHours?: boolean;
+  zoomLevel?: number; // Zoom level percentage (100, 75, 50, 25)
 }
 
 export function CalendarColumn({
@@ -39,8 +40,13 @@ export function CalendarColumn({
   onAfterHoursHeightChange,
   showBeforeHours = false,
   showAfterHours = false,
+  zoomLevel = 100,
 }: CalendarColumnProps) {
   const timeSlots = generateTimeSlots(config);
+
+  // Calculate slot height based on zoom level (only affects regular hours)
+  const BASE_SLOT_HEIGHT = 48;
+  const slotHeight = BASE_SLOT_HEIGHT * (zoomLevel / 100);
 
   // Helper to check if appointment has negative ID (should be treated as all-day)
   const hasNegativeId = (apt: Appointment) => {
@@ -170,7 +176,6 @@ export function CalendarColumn({
     const { column, totalColumns } = getAppointmentLayout(appointment);
 
     // Convert grid positioning to pixels for absolute positioning
-    const slotHeight = 48;
     const spacing = 1; // 1px spacing around appointments (Outlook-style)
     const topPx = (startRow - 1) * slotHeight + startOffset * slotHeight;
     const bottomPx = (endRow - 1) * slotHeight + endOffset * slotHeight;
@@ -188,8 +193,6 @@ export function CalendarColumn({
       zIndex: column + 1,
     };
   };
-
-  const slotHeight = 48; // Height in pixels for each time slot
 
   return (
     <div className={cn('flex-1 border-r flex flex-col', isToday && 'bg-primary/5', className)}>

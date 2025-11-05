@@ -1,5 +1,6 @@
 import { isSameDay } from 'date-fns';
 import { useDispatchStore } from '@/stores/useDispatchStore';
+import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 
 interface UtilizationBarProps {
@@ -45,40 +46,35 @@ export function UtilizationBar({ agentId, date }: UtilizationBarProps) {
   const utilizationPercentage = (scheduledHours / availableHours) * 100;
 
   // Determine color based on utilization
-  const getUtilizationColor = () => {
+  const getUtilizationBarColor = () => {
     if (utilizationPercentage >= 100) return 'bg-red-500';
     if (utilizationPercentage >= 80) return 'bg-orange-500';
     if (utilizationPercentage >= 50) return 'bg-yellow-500';
     return 'bg-green-500';
   };
 
+  const getUtilizationBadgeColor = () => {
+    if (utilizationPercentage >= 100) return 'bg-red-500 hover:bg-red-600 border-red-600';
+    if (utilizationPercentage >= 80) return 'bg-orange-500 hover:bg-orange-600 border-orange-600';
+    if (utilizationPercentage >= 50) return 'bg-yellow-500 hover:bg-yellow-600 border-yellow-600';
+    return 'bg-green-500 hover:bg-green-600 border-green-600';
+  };
+
   return (
-    <div className="space-y-0.5">
+    <div className="relative">
       {/* Bar */}
       <div className="h-2 bg-muted rounded-full overflow-hidden">
         <div
-          className={cn('h-full transition-all', getUtilizationColor())}
+          className={cn('h-full transition-all', getUtilizationBarColor())}
           style={{ width: `${Math.min(utilizationPercentage, 100)}%` }}
         />
       </div>
 
-      {/* Text */}
-      <div className="text-[10px] text-center font-medium">
-        {scheduledHours.toFixed(1)}/{availableHours.toFixed(1)}{' '}
-        <span className="text-muted-foreground">
-          {utilizationPercentage.toFixed(0)}%
-        </span>{' '}
-        <span
-          className={cn(
-            utilizationPercentage >= 100
-              ? 'text-red-600'
-              : utilizationPercentage >= 50
-              ? 'text-orange-600'
-              : 'text-green-600'
-          )}
-        >
-          {(availableHours - scheduledHours).toFixed(1)}
-        </span>
+      {/* Centered Badge overlaid on the bar */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        <Badge variant="default" className={cn('h-5 px-2 text-[10px] font-semibold shadow-sm text-white', getUtilizationBadgeColor())}>
+          {scheduledHours.toFixed(1)}/{availableHours.toFixed(1)} ({utilizationPercentage.toFixed(0)}%)
+        </Badge>
       </div>
     </div>
   );

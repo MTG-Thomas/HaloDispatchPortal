@@ -1,16 +1,16 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { format } from 'date-fns';
-import { Loader2, User, Search, RotateCcw } from 'lucide-react';
+import { Loader2, Search, RotateCcw } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { useDispatchStore } from '@/stores/useDispatchStore';
 import { useConfigStore } from '@/stores/configStore';
 import { usePreferencesStore } from '@/stores/preferencesStore';
-import { getAgentPhotoUrl } from '@/services/halo-api';
 import { Pagination } from '@/components/tickets/Pagination';
 import { RefreshButton } from '@/components/tickets/RefreshButton';
 import { useDraggableTicket } from '@/hooks/useDraggableTicket';
+import { AgentAvatar } from '@/components/AgentAvatar';
 import { cn } from '@/lib/utils';
 import type { EnrichedTicket } from '@/types/halo';
 import type { Ticket } from '@/types';
@@ -224,6 +224,7 @@ export function TicketList() {
     pageSize,
     totalRecords,
     setPage,
+    agents,
   } = useDispatchStore();
 
   const { config } = useConfigStore();
@@ -301,10 +302,6 @@ export function TicketList() {
 
   // Render cell content based on column ID
   const renderCell = (column: ColumnConfig, ticket: EnrichedTicket) => {
-    const agentPhotoUrl = ticket.agentPhotoUrl
-      ? getAgentPhotoUrl(config.resourceServer, ticket.agentPhotoUrl)
-      : null;
-
     const getSlaColorClass = () => {
       switch (ticket.slaState) {
         case 'overdue':
@@ -376,26 +373,19 @@ export function TicketList() {
       case 'team':
         return <span className="text-xs">{ticket.team}</span>;
 
-      case 'agent':
-        return (
-          <div className="flex items-center gap-2">
-            {agentPhotoUrl ? (
-              <img
-                src={agentPhotoUrl}
-                alt={ticket.agentName}
-                className="w-6 h-6 rounded-full object-cover flex-shrink-0"
-                onError={(e) => {
-                  e.currentTarget.style.display = 'none';
-                  e.currentTarget.nextElementSibling?.classList.remove('hidden');
-                }}
-              />
-            ) : null}
-            <div className={cn('w-6 h-6 rounded-full bg-muted flex items-center justify-center flex-shrink-0', agentPhotoUrl && 'hidden')}>
-              <User className="w-3 h-3 text-muted-foreground" />
-            </div>
-            <span className="text-xs">{ticket.agentName}</span>
-          </div>
+      case 'agent': {
+        const agent = agents.find((a) => a.id === ticket.agent_id);
+        return agent ? (
+          <AgentAvatar
+            agent={agent}
+            size="sm"
+            showName
+            resourceServer={config.resourceServer}
+          />
+        ) : (
+          <span className="text-xs text-muted-foreground">{ticket.agentName || 'Unassigned'}</span>
         );
+      }
 
       case 'summary':
         return <span className="text-sm">{ticket.summary}</span>;
@@ -453,6 +443,9 @@ export function TicketList() {
                   className="pl-9"
                 />
               </div>
+              <span className="text-sm font-medium text-muted-foreground">
+                {totalRecords} {totalRecords === 1 ? 'Ticket' : 'Tickets'}
+              </span>
               <Button
                 variant="outline"
                 size="sm"
@@ -554,10 +547,7 @@ export function TicketList() {
 
       {/* Pagination */}
       {!ticketsLoading && selectedListIds.length > 0 && totalPages > 0 && (
-        <div className="p-3 border-t bg-muted/30 flex-shrink-0 flex items-center justify-between">
-          <p className="text-xs text-muted-foreground">
-            Showing {(currentPage - 1) * pageSize + 1} to {Math.min(currentPage * pageSize, totalRecords)} of {totalRecords} tickets
-          </p>
+        <div className="p-3 border-t bg-muted/30 flex-shrink-0 flex items-center justify-center">
           <Pagination
             currentPage={currentPage}
             totalPages={totalPages}

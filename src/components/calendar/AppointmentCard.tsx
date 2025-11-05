@@ -1,4 +1,3 @@
-import { format } from "date-fns";
 import { useCallback } from "react";
 import { Clock, AlertCircle, GripHorizontal, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -63,7 +62,7 @@ export function AppointmentCard({ appointment }: AppointmentCardProps) {
                 ref={dragRef}
                 className={cn(
                     "h-full rounded border-l-4 p-2 text-gray-900 shadow-sm hover:shadow-md cursor-grab active:cursor-grabbing relative group",
-                    !isResizing && "transition-all hover:scale-[1.01]",
+                    !isResizing && "transition-all",
                     isResizing && "z-50",
                     isCompleted && "opacity-60"
                 )}
@@ -107,13 +106,6 @@ export function AppointmentCard({ appointment }: AppointmentCardProps) {
                         {appointment.client_name || appointment.user_name}
                     </div>
                 )}
-                <div className="text-[10px] opacity-75 mt-1">
-                    {format(appointment.startTime, "h:mm a")} -{" "}
-                    {format(appointment.endTime, "h:mm a")}
-                    {isResizing && (
-                        <span className="ml-1 opacity-60">(resizing)</span>
-                    )}
-                </div>
 
                 {/* Bottom resize handle */}
                 <div

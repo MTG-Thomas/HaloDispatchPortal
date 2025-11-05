@@ -32,8 +32,8 @@ export function LoadingScreen({ message = "Loading..." }: LoadingScreenProps) {
     }, []);
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
-            <div className="flex flex-col items-center gap-6 max-w-md">
+        <div className="h-screen w-screen flex items-center justify-center bg-background">
+            <div className="flex flex-col items-center gap-6 max-w-md px-4">
                 {/* Animated Spinner */}
                 <div className="relative">
                     <Loader2 className="h-16 w-16 animate-spin text-primary" />

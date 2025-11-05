@@ -11,6 +11,7 @@ interface TimeLabelsColumnProps {
   allDayHeight: number;
   beforeHoursHeight: number;
   afterHoursHeight: number;
+  zoomLevel?: number; // Zoom level percentage (100, 75, 50, 25)
 }
 
 export function TimeLabelsColumn({
@@ -21,9 +22,13 @@ export function TimeLabelsColumn({
   allDayHeight,
   beforeHoursHeight,
   afterHoursHeight,
+  zoomLevel = 100,
 }: TimeLabelsColumnProps) {
   const timeSlots = generateTimeSlots(config);
-  const slotHeight = 48; // Must match CalendarColumn
+
+  // Calculate slot height based on zoom level (must match CalendarColumn)
+  const BASE_SLOT_HEIGHT = 48;
+  const slotHeight = BASE_SLOT_HEIGHT * (zoomLevel / 100);
 
   return (
     <div className={cn('border-r bg-muted/10', className)}>
