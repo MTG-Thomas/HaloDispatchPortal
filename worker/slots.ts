@@ -3,10 +3,12 @@
  *
  * Rules mirror the SPA calendar exactly:
  * - Grid step from `DEFAULT_CALENDAR_CONFIG.slotIncrement` (15 min).
- * - Working window from `DEFAULT_WORKDAY_START/END` (09:00-17:00, Mon-Fri).
- *   The SPA synthesizes these same defaults client-side because Halo's
- *   ClientCache agents carry no schedule (see referenceSlice); the Worker
- *   reuses them so offered slots match what dispatchers see.
+ * - Working window per agent from `schedules` (full `/api/agent` rows via
+ *   the cached directory in `./schedules`), falling back to
+ *   `DEFAULT_WORKDAY_START/END` (09:00-17:00, Mon-Fri) when an agent has no
+ *   usable bounds. The ClientCache `agents[]` directory carries no schedule
+ *   (verified: its fixture entries have no workhour fields), which is why
+ *   the Worker fetches the full agent directory instead.
  * - Busy blocks come from live Halo appointments parsed as UTC, the same way
  *   `parseHaloUtcDate` treats Halo's datetimes (UTC even without a `Z`).
  * - Client-local day boundaries come from the caller's `utcOffsetMin`
@@ -46,6 +48,17 @@ export interface DaySlots {
     slots: SlotOption[];
 }
 
+/** Working window in minutes after local midnight. */
+export interface AgentWindow {
+    startMin: number;
+    endMin: number;
+}
+
+/** Per-agent working window; agents without one use the 09:00-17:00 default. */
+export interface AgentSchedule extends AgentWindow {
+    agentId: number;
+}
+
 export interface ComputeSlotsInput {
     agentIds: number[];
     busy: SlotBusyBlock[];
@@ -63,6 +76,11 @@ export interface ComputeSlotsInput {
      * look like 09:00 local. Day grouping stays in the customer offset.
      */
     businessOffsetMin?: number;
+    /**
+     * Per-agent working windows (see `./schedules`). Agents with no entry —
+     * or an unusable one — fall back to the 09:00-17:00 defaults.
+     */
+    schedules?: AgentSchedule[];
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -104,17 +122,42 @@ function overlaps(aStart: number, aEnd: number, bStart: number, bEnd: number): b
     return aStart < bEnd && bStart < aEnd;
 }
 
+/** An agent's working window, or the default when they have no usable entry. */
+function windowForAgent(
+    schedules: AgentSchedule[] | undefined,
+    agentId: number,
+    fallback: AgentWindow,
+): AgentWindow {
+    const match = schedules?.find((s) => s.agentId === agentId);
+    if (
+        match &&
+        Number.isFinite(match.startMin) &&
+        Number.isFinite(match.endMin) &&
+        match.startMin >= 0 &&
+        match.endMin <= 24 * 60 &&
+        match.endMin > match.startMin
+    ) {
+        return { startMin: match.startMin, endMin: match.endMin };
+    }
+    return fallback;
+}
+
 /**
  * True when [startMs, endMs) sits on a Mon-Fri working day fully inside the
- * 09:00-17:00 window, measured in the given UTC offset. No grid, past, or
- * overlap checks — the second-offset business-hours gate shared by offer and
- * book paths.
+ * working window (per-agent `window`, else the 09:00-17:00 default), measured
+ * in the given UTC offset. No grid, past, or overlap checks — the
+ * second-offset business-hours gate shared by offer and book paths.
  */
-export function withinBusinessHours(startMs: number, endMs: number, offsetMin: number): boolean {
+export function withinBusinessHours(
+    startMs: number,
+    endMs: number,
+    offsetMin: number,
+    window?: AgentWindow,
+): boolean {
     if (!(endMs > startMs)) {
         return false;
     }
-    const { startMin, endMin } = workdayWindowMinutes();
+    const { startMin, endMin } = window ?? workdayWindowMinutes();
     const offsetMs = offsetMin * 60_000;
     const localStart = startMs + offsetMs;
     const localMidnight = Math.floor(localStart / DAY_MS) * DAY_MS;
@@ -136,7 +179,8 @@ export function withinBusinessHours(startMs: number, endMs: number, offsetMin: n
 export function computeSlots(input: ComputeSlotsInput): DaySlots[] {
     const days = input.days ?? DEFAULT_SLOT_DAYS;
     const durationMin = input.durationMin ?? DEFAULT_SLOT_DURATION_MIN;
-    const { startMin, endMin, gridMin } = workdayWindowMinutes();
+    const fallback = workdayWindowMinutes();
+    const gridMin = fallback.gridMin;
     const out: DaySlots[] = [];
 
     for (let dayOffset = 0; dayOffset < days; dayOffset++) {
@@ -148,6 +192,7 @@ export function computeSlots(input: ComputeSlotsInput): DaySlots[] {
         const dayEndUtc = midnightUtc + DAY_MS;
         const slots: SlotOption[] = [];
         for (const agentId of input.agentIds) {
+            const { startMin, endMin } = windowForAgent(input.schedules, agentId, fallback);
             const agentBusy = input.busy.filter((b) => b.agentId === agentId);
             if (
                 agentBusy.some(
@@ -165,7 +210,10 @@ export function computeSlots(input: ComputeSlotsInput): DaySlots[] {
                 if (
                     input.businessOffsetMin !== undefined &&
                     input.businessOffsetMin !== input.utcOffsetMin &&
-                    !withinBusinessHours(startMs, endMs, input.businessOffsetMin)
+                    !withinBusinessHours(startMs, endMs, input.businessOffsetMin, {
+                        startMin,
+                        endMin,
+                    })
                 ) {
                     continue;
                 }
@@ -204,6 +252,11 @@ export interface ValidateSlotInput {
      * this offset. Grid alignment stays in the customer offset.
      */
     businessOffsetMin?: number;
+    /**
+     * Per-agent working windows (see `./schedules`). Agents with no entry —
+     * or an unusable one — fall back to the 09:00-17:00 defaults.
+     */
+    schedules?: AgentSchedule[];
 }
 
 /**
@@ -215,7 +268,9 @@ export function validateSlot(input: ValidateSlotInput): SlotCheck {
     if (!(input.endMs > input.startMs) || input.startMs <= input.nowMs) {
         return { ok: false, reason: "past" };
     }
-    const { startMin, endMin, gridMin } = workdayWindowMinutes();
+    const fallback = workdayWindowMinutes();
+    const { startMin, endMin } = windowForAgent(input.schedules, input.agentId, fallback);
+    const gridMin = fallback.gridMin;
     const offsetMs = input.utcOffsetMin * 60_000;
     const localStart = input.startMs + offsetMs;
     const localMidnight = Math.floor(localStart / DAY_MS) * DAY_MS;
@@ -236,7 +291,10 @@ export function validateSlot(input: ValidateSlotInput): SlotCheck {
     if (
         input.businessOffsetMin !== undefined &&
         input.businessOffsetMin !== input.utcOffsetMin &&
-        !withinBusinessHours(input.startMs, input.endMs, input.businessOffsetMin)
+        !withinBusinessHours(input.startMs, input.endMs, input.businessOffsetMin, {
+            startMin,
+            endMin,
+        })
     ) {
         return { ok: false, reason: "hours" };
     }

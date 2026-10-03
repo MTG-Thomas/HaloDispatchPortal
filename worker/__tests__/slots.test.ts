@@ -287,3 +287,162 @@ describe("bookingWindowIso", () => {
         });
     });
 });
+
+describe("per-agent schedules", () => {
+    const shortDay = [{ agentId: 7, startMin: 600, endMin: 720 }]; // 10:00-12:00
+
+    it("offers slots inside the agent's custom window", () => {
+        const days = computeSlots({
+            agentIds: [7],
+            busy: [],
+            nowMs: MONDAY,
+            utcOffsetMin: 0,
+            days: 1,
+            schedules: shortDay,
+        });
+        expect(days).toHaveLength(1);
+        // 10:00..11:30 starts on a 15-minute grid.
+        expect(days[0].slots).toHaveLength(7);
+        expect(days[0].slots[0]).toEqual({
+            agentId: 7,
+            start: "2026-10-05T10:00:00.000Z",
+            end: "2026-10-05T10:30:00.000Z",
+        });
+        const last = days[0].slots[days[0].slots.length - 1];
+        expect(last.start).toBe("2026-10-05T11:30:00.000Z");
+        expect(last.end).toBe("2026-10-05T12:00:00.000Z");
+    });
+
+    it("falls back to 09:00-17:00 for agents without a schedule", () => {
+        const days = computeSlots({
+            agentIds: [7, 9],
+            busy: [],
+            nowMs: MONDAY,
+            utcOffsetMin: 0,
+            days: 1,
+            schedules: shortDay,
+        });
+        const custom = days[0].slots.filter((s) => s.agentId === 7);
+        const fallback = days[0].slots.filter((s) => s.agentId === 9);
+        expect(custom[0].start).toBe("2026-10-05T10:00:00.000Z");
+        expect(fallback[0].start).toBe("2026-10-05T09:00:00.000Z");
+        expect(fallback).toHaveLength(31);
+    });
+
+    it("falls back when a schedule entry is unusable", () => {
+        for (const schedules of [
+            [{ agentId: 7, startMin: 720, endMin: 600 }],
+            [{ agentId: 7, startMin: 600, endMin: 600 }],
+            [{ agentId: 7, startMin: NaN, endMin: 720 }],
+            [{ agentId: 7, startMin: -30, endMin: 720 }],
+            [{ agentId: 7, startMin: 600, endMin: 24 * 60 + 1 }],
+        ]) {
+            const days = computeSlots({
+                agentIds: [7],
+                busy: [],
+                nowMs: MONDAY,
+                utcOffsetMin: 0,
+                days: 1,
+                schedules,
+            });
+            expect(days[0].slots).toHaveLength(31);
+            expect(days[0].slots[0].start).toBe("2026-10-05T09:00:00.000Z");
+        }
+    });
+
+    it("enforces the agent window in the dispatcher offset too", () => {
+        // Customer UTC+1: customer-local 10:00 is 09:00Z, outside the
+        // agent's 10:00-12:00 window in the dispatcher (UTC) offset, so the
+        // first offered slot starts at 10:00Z (11:00 customer-local).
+        const days = computeSlots({
+            agentIds: [7],
+            busy: [],
+            nowMs: MONDAY,
+            utcOffsetMin: 60,
+            businessOffsetMin: 0,
+            days: 1,
+            schedules: shortDay,
+        });
+        expect(days[0].slots[0].start).toBe("2026-10-05T10:00:00.000Z");
+    });
+
+    it("checks withinBusinessHours against a custom window", () => {
+        const window = { startMin: 600, endMin: 720 };
+        expect(
+            withinBusinessHours(
+                Date.parse("2026-10-05T09:00:00.000Z"),
+                Date.parse("2026-10-05T09:30:00.000Z"),
+                0,
+                window,
+            ),
+        ).toBe(false);
+        expect(
+            withinBusinessHours(
+                Date.parse("2026-10-05T10:00:00.000Z"),
+                Date.parse("2026-10-05T10:30:00.000Z"),
+                0,
+                window,
+            ),
+        ).toBe(true);
+    });
+
+    it("validates bookings against the agent's window", () => {
+        const base = {
+            busy: [],
+            nowMs: MONDAY,
+            utcOffsetMin: 0,
+            agentId: 7,
+            schedules: shortDay,
+        };
+        // 10:00 books for the custom-window agent.
+        expect(
+            validateSlot({
+                ...base,
+                startMs: Date.parse("2026-10-05T10:00:00.000Z"),
+                endMs: Date.parse("2026-10-05T10:30:00.000Z"),
+            }),
+        ).toEqual({ ok: true });
+        // 09:00 does not: outside their window.
+        expect(
+            validateSlot({
+                ...base,
+                startMs: Date.parse("2026-10-05T09:00:00.000Z"),
+                endMs: Date.parse("2026-10-05T09:30:00.000Z"),
+            }),
+        ).toEqual({ ok: false, reason: "hours" });
+        // Grid alignment is relative to the custom window start.
+        expect(
+            validateSlot({
+                ...base,
+                startMs: Date.parse("2026-10-05T10:07:00.000Z"),
+                endMs: Date.parse("2026-10-05T10:37:00.000Z"),
+            }),
+        ).toEqual({ ok: false, reason: "hours" });
+        // Another agent without a schedule still books 09:00.
+        expect(
+            validateSlot({
+                ...base,
+                agentId: 9,
+                startMs: Date.parse("2026-10-05T09:00:00.000Z"),
+                endMs: Date.parse("2026-10-05T09:30:00.000Z"),
+            }),
+        ).toEqual({ ok: true });
+    });
+
+    it("validates bookings against the agent window in the dispatcher offset", () => {
+        // 09:00Z is 10:00 for a UTC+1 customer (in the 10:00-12:00 window)
+        // but 09:00 for a UTC dispatcher (outside it).
+        expect(
+            validateSlot({
+                busy: [],
+                nowMs: MONDAY,
+                utcOffsetMin: 60,
+                agentId: 7,
+                startMs: Date.parse("2026-10-05T09:00:00.000Z"),
+                endMs: Date.parse("2026-10-05T09:30:00.000Z"),
+                businessOffsetMin: 0,
+                schedules: shortDay,
+            }),
+        ).toEqual({ ok: false, reason: "hours" });
+    });
+});

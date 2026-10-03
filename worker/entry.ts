@@ -39,6 +39,7 @@ import {
     validateSlot,
 } from "./slots";
 import type { SlotBusyBlock } from "./slots";
+import { getAgentDirectory, toAgentSchedules } from "./schedules";
 import { checkPublicRateLimit } from "./ratelimit";
 
 export interface BookingEnv {
@@ -519,17 +520,17 @@ async function handleSlots(
     } catch {
         return json(502, { error: "halo-unavailable" });
     }
-    // Agent names are best-effort labels; ids alone still book.
+    // Agent directory (name labels + working hours) is cached
+    // tenant-wide and best-effort: ids alone still book, and agents without
+    // schedules fall back to the 09:00-17:00 defaults in the slot engine.
+    const directory = await getAgentDirectory(env.BOOKING_REQUESTS, {
+        nowMs,
+        fetchAgents: () =>
+            withRefreshedHalo(env, rid, client, (accessToken) => client.getAgents(accessToken)),
+    });
     const names = new Map<number, string>();
-    try {
-        const agents = await withRefreshedHalo(env, rid, client, (accessToken) =>
-            client.getAgents(accessToken),
-        );
-        for (const agent of agents) {
-            names.set(agent.id, agent.name);
-        }
-    } catch {
-        // Fall through with id-only labels.
+    for (const agent of directory ?? []) {
+        names.set(agent.id, agent.name);
     }
     const slots = computeSlots({
         agentIds: context.record.agentIds,
@@ -539,6 +540,7 @@ async function handleSlots(
         days,
         durationMin,
         businessOffsetMin: context.record.businessOffsetMin,
+        schedules: toAgentSchedules(directory ?? []),
     });
     return json(200, {
         rid,
@@ -671,6 +673,14 @@ async function handleBook(
     } catch {
         return json(502, { error: "halo-unavailable" });
     }
+    // Same cached directory the slots path uses, so book-time hours
+    // match what the picker offered. Best-effort: a miss falls back to the
+    // 09:00-17:00 defaults.
+    const directory = await getAgentDirectory(env.BOOKING_REQUESTS, {
+        nowMs,
+        fetchAgents: () =>
+            withRefreshedHalo(env, rid, client, (accessToken) => client.getAgents(accessToken)),
+    });
     const check = validateSlot({
         busy: toBusyBlocks(appointments),
         nowMs,
@@ -679,6 +689,7 @@ async function handleBook(
         startMs: parsed.value.startMs,
         endMs: parsed.value.endMs,
         businessOffsetMin: context.record.businessOffsetMin,
+        schedules: toAgentSchedules(directory ?? []),
     });
     if (!check.ok) {
         return check.reason === "taken"

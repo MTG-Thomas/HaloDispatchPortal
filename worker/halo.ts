@@ -70,6 +70,14 @@ export interface WorkerAppointment {
 export interface WorkerAgent {
     id: number;
     name: string;
+    /**
+     * Fractional working-day bounds from the full agent row
+     * (`workhour_start` / `workhour_end`, e.g. 9.5 = 09:30). Same fields as
+     * `HaloAgent` in `src/types/halo.ts`; absent when Halo omits them, in
+     * which case the slot engine falls back to the 09:00-17:00 defaults.
+     */
+    workhourStart?: number;
+    workhourEnd?: number;
 }
 
 function stripTrailingSlash(origin: string): string {
@@ -117,7 +125,14 @@ function toWorkerAgents(body: unknown): WorkerAgent[] {
         if (typeof row.id !== "number" || typeof row.name !== "string") {
             continue;
         }
-        out.push({ id: row.id, name: row.name });
+        const agent: WorkerAgent = { id: row.id, name: row.name };
+        if (typeof row.workhour_start === "number") {
+            agent.workhourStart = row.workhour_start;
+        }
+        if (typeof row.workhour_end === "number") {
+            agent.workhourEnd = row.workhour_end;
+        }
+        out.push(agent);
     }
     return out;
 }
@@ -204,10 +219,12 @@ export function createHaloClient(options: HaloClientOptions): HaloClient {
         },
 
         async getAgents(accessToken): Promise<WorkerAgent[]> {
-            // Same flags as the SPA getAgents defaults.
+            // Full agent rows (no `basic_fields_only`): the slot engine
+            // needs `workhour_start`/`workhour_end` for per-agent working
+            // hours. Same `/api/agent` endpoint the SPA uses (see
+            // `getAgents` in src/services/halo-api.ts).
             const params = new URLSearchParams({
                 reassign: "true",
-                basic_fields_only: "true",
             });
             const response = await fetchImpl(`${resourceServer}/api/agent?${params}`, {
                 headers: { Authorization: `Bearer ${accessToken}` },

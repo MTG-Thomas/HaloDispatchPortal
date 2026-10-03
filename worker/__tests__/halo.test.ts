@@ -183,10 +183,11 @@ describe("Halo client", () => {
         expect((error as HaloApiError).status).toBe(500);
     });
 
-    it("lists agents as id/name pairs", async () => {
+    it("lists agents with working hours from full rows", async () => {
         const fetchImpl: FetchImpl = vi.fn(async () =>
             Response.json([
-                { id: 7, name: "Dana" },
+                { id: 7, name: "Dana", workhour_start: 9.5, workhour_end: 17 },
+                { id: 9, name: "Nina" },
                 { id: "x", name: "skipped" },
             ]),
         );
@@ -196,10 +197,14 @@ describe("Halo client", () => {
             authServer: "https://auth.halopsa.com",
             clientId: "client-1",
         });
-        await expect(client.getAgents("access-abc")).resolves.toEqual([{ id: 7, name: "Dana" }]);
+        await expect(client.getAgents("access-abc")).resolves.toEqual([
+            { id: 7, name: "Dana", workhourStart: 9.5, workhourEnd: 17 },
+            { id: 9, name: "Nina" },
+        ]);
         const [url] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
         expect(url).toContain("/api/agent?");
-        expect(url).toContain("basic_fields_only=true");
+        // Full rows: basic_fields_only would strip the workhour fields.
+        expect(url).not.toContain("basic_fields_only");
     });
 
     it("creates one appointment as a single-element array and returns its id", async () => {

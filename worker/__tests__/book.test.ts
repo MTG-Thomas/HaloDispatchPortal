@@ -309,6 +309,36 @@ describe("slots endpoint", () => {
         expect(response.status).toBe(200);
         expect(stub.calls.some((c) => c.url === `${AUTH}/token`)).toBe(true);
     });
+
+    it("offers per-agent working hours and caches the directory", async () => {
+        const testEnv = env();
+        const stub = stubHalo({
+            agents: [
+                { id: 7, name: "Dana Dispatcher", workhour_start: 10, workhour_end: 12 },
+                { id: 9, name: "Nina Booker" },
+            ],
+        });
+        const { rid, token } = await mint(testEnv);
+
+        const first = await getSlots(testEnv, rid, token);
+        expect(first.status).toBe(200);
+        type Slot = { agentId: number; start: string; end: string };
+        const all = (first.json.days as { slots: Slot[] }[]).flatMap((d) => d.slots);
+        const custom = all.filter((s) => s.agentId === 7);
+        const fallback = all.filter((s) => s.agentId === 9);
+        expect(custom.length).toBeGreaterThan(0);
+        for (const slot of custom) {
+            expect(new Date(slot.start).getUTCHours()).toBeGreaterThanOrEqual(10);
+            const end = new Date(slot.end);
+            expect(end.getUTCHours() + end.getUTCMinutes() / 60).toBeLessThanOrEqual(12);
+        }
+        // Agent 9 has no schedule: falls back to 09:00.
+        expect(fallback.some((s) => s.start.endsWith("T09:00:00.000Z"))).toBe(true);
+
+        // The second view reuses the cached directory: no second agent fetch.
+        expect((await getSlots(testEnv, rid, token)).status).toBe(200);
+        expect(stub.calls.filter((c) => c.url.includes("/api/agent"))).toHaveLength(1);
+    });
 });
 
 describe("book endpoint", () => {
@@ -470,6 +500,33 @@ describe("book endpoint", () => {
         const local = await mint(localEnv, { dispatcherUtcOffset: 120 });
         const booked = await postBook(localEnv, local.rid, { token: local.token, ...body });
         expect(booked.status).toBe(201);
+    });
+
+    it("rejects bookings outside the agent's working hours", async () => {
+        const testEnv = env();
+        stubHalo({
+            agents: [
+                { id: 7, name: "Dana Dispatcher", workhour_start: 10, workhour_end: 12 },
+                { id: 9, name: "Nina Booker" },
+            ],
+        });
+        const { rid, token } = await mint(testEnv);
+        const slots = await getSlots(testEnv, rid, token);
+        type Slot = { agentId: number; start: string; end: string };
+        const all = (slots.json.days as { slots: Slot[] }[]).flatMap((d) => d.slots);
+        // A 09:00 fallback slot exists for agent 9; the same time is
+        // outside agent 7's 10:00-12:00 window.
+        const nine = all.find((s) => s.agentId === 9 && s.start.endsWith("T09:00:00.000Z"));
+        expect(nine).toBeTruthy();
+        const rejected = await postBook(testEnv, rid, {
+            token,
+            agentId: 7,
+            start: nine!.start,
+            end: nine!.end,
+            utcOffset: 0,
+        });
+        expect(rejected.status).toBe(400);
+        expect(rejected.json.error).toBe("invalid-slot");
     });
 });
 
