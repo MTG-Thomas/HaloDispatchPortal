@@ -1,6 +1,7 @@
 import { defineConfig, type Plugin } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { cloudflare } from "@cloudflare/vite-plugin";
 import path from "path";
 
 /**
@@ -24,7 +25,16 @@ function stripCspMetaInDev(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
-    plugins: [react(), tailwindcss(), stripCspMetaInDev()],
+    // The Cloudflare plugin reroutes build output into .cloudflare/ for
+    // `cf deploy --prebuilt`, so it loads ONLY for CF builds
+    // (npm run build:cf). Plain `vite build` still emits dist/ for
+    // preview, e2e, and CI.
+    plugins: [
+        react(),
+        tailwindcss(),
+        stripCspMetaInDev(),
+        ...(process.env.CF_WORKERS_BUILD === "1" ? [cloudflare()] : []),
+    ],
     test: {
         environment: "jsdom",
         setupFiles: ["./src/test/setup.ts"],
