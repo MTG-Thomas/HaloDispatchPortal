@@ -43,6 +43,8 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import { cn } from "@/lib/utils";
 import { computeSla } from "@/utils/enrich-ticket";
 import { scoreBreakdown, scoreTicket } from "@/lib/priority-score";
+import { sortBreachingNext } from "@/lib/sla-escalation";
+import { requestOverdueAlertPermission, useSlaOverdueAlerts } from "@/hooks/useSlaOverdueAlerts";
 import {
     BookingTrackerError,
     bookingDisplayStatus,
@@ -77,6 +79,7 @@ interface SortableHeaderProps {
 interface DraggableTicketRowProps {
     ticket: EnrichedTicket;
     visibleColumns: ColumnConfig[];
+    now: Date;
     renderCell: (column: ColumnConfig, ticket: EnrichedTicket) => React.ReactNode;
     booking?: BookingRequestSummary;
     bookingBusy: boolean;
@@ -88,6 +91,7 @@ interface DraggableTicketRowProps {
 function DraggableTicketRow({
     ticket,
     visibleColumns,
+    now,
     renderCell,
     booking,
     bookingBusy,
@@ -114,12 +118,18 @@ function DraggableTicketRow({
     };
 
     const dragRef = useDraggableTicket(dragTicket);
+    const { slaState } = computeSla(ticket.fixbydate, ticket.excludefromsla, ticket.onhold, now);
 
     return (
         <tr
             ref={dragRef}
             key={`${ticket._listId}-${ticket.id}`}
-            className="border-b hover:bg-muted/30 transition-colors cursor-grab active:cursor-grabbing select-none"
+            data-sla-state={slaState}
+            className={cn(
+                "border-b hover:bg-muted/30 transition-colors cursor-grab active:cursor-grabbing select-none",
+                slaState === "overdue" && "bg-red-500/10 hover:bg-red-500/15",
+                slaState === "warning" && "bg-amber-500/10 hover:bg-amber-500/15",
+            )}
         >
             {visibleColumns.map((column) => (
                 <td
@@ -558,8 +568,18 @@ export function TicketList() {
     const [searchTerm, setSearchTerm] = useState("");
     const [sort, setSort] = useState<SortState | null>(null);
     const [queueOpen, setQueueOpen] = useState(false);
+    const [breachingNext, setBreachingNext] = useState(false);
+    const [alertsEnabled, setAlertsEnabled] = useState(() => {
+        try {
+            return localStorage.getItem("halo.slaOverdueAlerts") === "1";
+        } catch {
+            return false;
+        }
+    });
     // Single ticking clock shared by every SLA cell (re-renders once a minute).
     const now = useNow(60_000);
+    // Opt-in browser notification when a loaded ticket newly breaches SLA.
+    useSlaOverdueAlerts(haloTickets, now, alertsEnabled);
     // Dispatcher tracking: latest booking request per ticket (chips) plus the
     // open count for the queue button. Loads silently; list failure only
     // surfaces inside the queue dialog, never over the ticket table.
@@ -624,16 +644,18 @@ export function TicketList() {
         });
     }, [haloTickets, searchTerm]);
 
-    // Sort by dispatch priority score when the Priority header was clicked.
-    // Id tiebreak keeps the order deterministic for equal scores.
+    // "Breaching next" lane takes precedence over header sorting: SLA band
+    // first, then dispatch score. Otherwise sort by dispatch priority score
+    // when the Priority header was clicked (id tiebreak keeps it deterministic).
     const sortedTickets = useMemo(() => {
+        if (breachingNext) return sortBreachingNext(filteredTickets, now);
         if (sort?.columnId !== SCORE_SORT_COLUMN_ID) return filteredTickets;
         const factor = sort.direction === "desc" ? -1 : 1;
         return [...filteredTickets].sort((a, b) => {
             const diff = scoreTicket(a, now) - scoreTicket(b, now);
             return diff !== 0 ? diff * factor : a.id - b.id;
         });
-    }, [filteredTickets, sort, now]);
+    }, [filteredTickets, breachingNext, sort, now]);
 
     // Calculate total pages
     const totalPages = Math.ceil(totalRecords / pageSize);
@@ -649,8 +671,33 @@ export function TicketList() {
     useEffect(() => {
         resetWindowing();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currentPage, searchTerm, selectedListIds, sort]);
+    }, [currentPage, searchTerm, selectedListIds, sort, breachingNext]);
     const visibleTickets = sortedTickets.slice(0, visibleCount);
+
+    // Opt-in overdue alerts: enabling requests browser-notification
+    // permission first and only sticks when permission is granted.
+    const handleAlertsToggle = async () => {
+        if (alertsEnabled) {
+            setAlertsEnabled(false);
+            try {
+                localStorage.setItem("halo.slaOverdueAlerts", "0");
+            } catch {
+                /* storage unavailable — preference just won't persist */
+            }
+            return;
+        }
+        const granted = await requestOverdueAlertPermission();
+        if (granted) {
+            setAlertsEnabled(true);
+            try {
+                localStorage.setItem("halo.slaOverdueAlerts", "1");
+            } catch {
+                /* storage unavailable — preference just won't persist */
+            }
+        } else {
+            toast.warning("Browser notifications are blocked — overdue alerts stay off.");
+        }
+    };
 
     // Header-click sort: first click sorts highest score first, then toggles.
     const handleSort = (columnId: string) => {
@@ -846,6 +893,26 @@ export function TicketList() {
                                 Reset Columns
                             </Button>
                             <Button
+                                variant={breachingNext ? "default" : "outline"}
+                                size="sm"
+                                onClick={() => setBreachingNext((v) => !v)}
+                                title="Order tickets by SLA breach risk: overdue, then warning, then the rest by dispatch score"
+                                aria-pressed={breachingNext}
+                            >
+                                <AlertTriangle className="h-4 w-4 mr-2" aria-hidden />
+                                Breaching next
+                            </Button>
+                            <Button
+                                variant={alertsEnabled ? "default" : "outline"}
+                                size="sm"
+                                onClick={() => void handleAlertsToggle()}
+                                title="Notify me in the browser when a loaded ticket newly breaches SLA"
+                                aria-pressed={alertsEnabled}
+                            >
+                                <Clock className="h-4 w-4 mr-2" aria-hidden />
+                                Overdue alerts
+                            </Button>
+                            <Button
                                 variant="outline"
                                 size="sm"
                                 onClick={() => setQueueOpen(true)}
@@ -957,6 +1024,7 @@ export function TicketList() {
                                                 key={`${ticket._listId}-${ticket.id}`}
                                                 ticket={ticket}
                                                 visibleColumns={visibleColumns}
+                                                now={now}
                                                 renderCell={renderCell}
                                                 booking={booking.byTicket.get(ticket.id)}
                                                 bookingBusy={
