@@ -539,7 +539,9 @@ export interface MintBookingResult {
 
 /** Mint a booking link (no dispatcher header: the pair rides in the body). */
 export async function mintBookingRequest(args: MintBookingArgs): Promise<MintBookingResult> {
-    const dispatcherUtcOffset = args.dispatcherUtcOffset ?? -new Date().getTimezoneOffset();
+    // `|| 0` normalizes -0 (UTC machines) to 0 for a stable wire value.
+    const dispatcherUtcOffset =
+        (args.dispatcherUtcOffset ?? -new Date().getTimezoneOffset()) || 0;
     let response: Response;
     try {
         response = await fetch(`${BOOK_API_BASE}/requests`, {

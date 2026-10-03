@@ -365,7 +365,8 @@ describe("dispatcher tracking", () => {
                 agentIds: [7],
                 appointmentTypeId: 3,
                 haloTokenPair: pair,
-                dispatcherUtcOffset: -new Date().getTimezoneOffset(),
+                // Matches the client's -0 normalization on UTC machines.
+                dispatcherUtcOffset: -new Date().getTimezoneOffset() || 0,
             });
         });
 
