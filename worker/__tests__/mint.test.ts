@@ -1,8 +1,14 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import worker, { validateMintRequest, type BookingEnv } from "../entry";
+import { getBookingRequest } from "../kv";
+import { resetRateLimitsForTests } from "../ratelimit";
 import { verifyBookingToken } from "../token";
 import { fakeKv } from "./fake-kv";
+
+beforeEach(() => {
+    resetRateLimitsForTests();
+});
 
 const SECRET = "test-secret-for-mint";
 
@@ -113,6 +119,20 @@ describe("validateMintRequest", () => {
             expect(result.details).toHaveLength(4);
         }
     });
+
+    it("accepts an optional dispatcher offset and rejects bad ones", () => {
+        const ok = validateMintRequest({ ...goodBody(), dispatcherUtcOffset: -300 });
+        expect(ok).toMatchObject({ ok: true, value: { dispatcherUtcOffset: -300 } });
+        for (const dispatcherUtcOffset of [1.5, "0", -841, 841, Number.NaN]) {
+            const result = validateMintRequest({ ...goodBody(), dispatcherUtcOffset });
+            expect(result.ok).toBe(false);
+            if (!result.ok) {
+                expect(result.details).toContain(
+                    "dispatcherUtcOffset must be an integer between -840 and 840",
+                );
+            }
+        }
+    });
 });
 
 describe("mint endpoint", () => {
@@ -153,6 +173,18 @@ describe("mint endpoint", () => {
             env(),
         );
         expect(response.status).toBe(400);
+    });
+
+    it("stores the dispatcher offset for business-hours checks", async () => {
+        const testEnv = env();
+        const { status, json } = await mint(testEnv, {
+            ...goodBody(),
+            dispatcherUtcOffset: -300,
+        });
+        expect(status).toBe(201);
+        await expect(
+            getBookingRequest(testEnv.BOOKING_REQUESTS, String(json.rid)),
+        ).resolves.toMatchObject({ businessOffsetMin: -300 });
     });
 });
 
@@ -231,6 +263,27 @@ describe("status and cancel endpoints", () => {
             testEnv,
         );
         expect(cancel.status).toBe(404);
+    });
+
+    it("rate-limits the dispatcher status and cancel routes", async () => {
+        const testEnv = env();
+        const { json } = await mint(testEnv, goodBody());
+        const statusUrl = `https://portal.test/api/book/requests/${json.rid}/status`;
+        const cancelUrl = `https://portal.test/api/book/requests/${json.rid}/cancel`;
+        const headers = {
+            Authorization: `Bearer ${GOOD_PAIR.access_token}`,
+            "cf-connecting-ip": "10.7.7.7",
+        };
+        for (let i = 0; i < 30; i++) {
+            const response = await worker.fetch(new Request(statusUrl, { headers }), testEnv);
+            expect(response.status).toBe(200);
+        }
+        expect((await worker.fetch(new Request(statusUrl, { headers }), testEnv)).status).toBe(429);
+        // The shared per-IP budget covers cancel too.
+        expect(
+            (await worker.fetch(new Request(cancelUrl, { method: "POST", headers }), testEnv))
+                .status,
+        ).toBe(429);
     });
 });
 

@@ -277,6 +277,26 @@ function SortableHeader({
                 sortable && "cursor-pointer select-none",
             )}
             onClick={sortable ? () => onSort?.(column.id) : undefined}
+            onKeyDown={
+                sortable
+                    ? (e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              onSort?.(column.id);
+                          }
+                      }
+                    : undefined
+            }
+            tabIndex={sortable ? 0 : undefined}
+            aria-sort={
+                sortable
+                    ? sortDirection === "asc"
+                        ? "ascending"
+                        : sortDirection === "desc"
+                          ? "descending"
+                          : "none"
+                    : undefined
+            }
             title={sortable ? "Click to sort by dispatch score" : undefined}
         >
             <div className="flex items-center gap-1">

@@ -100,12 +100,15 @@ afterEach(() => {
     resetRateLimitsForTests();
 });
 
-async function mint(testEnv: BookingEnv): Promise<{ rid: string; token: string }> {
+async function mint(
+    testEnv: BookingEnv,
+    overrides: Record<string, unknown> = {},
+): Promise<{ rid: string; token: string }> {
     const response = await worker.fetch(
         new Request("https://portal.test/api/book/requests", {
             method: "POST",
             headers: { "Content-Type": "application/json", "cf-connecting-ip": freshIp() },
-            body: JSON.stringify(goodBody()),
+            body: JSON.stringify({ ...goodBody(), ...overrides }),
         }),
         testEnv,
     );
@@ -215,6 +218,33 @@ describe("slots endpoint", () => {
         expect(response.status).toBe(410);
         expect(response.json.error).toBe("expired");
         expect((await getBookingRequest(testEnv.BOOKING_REQUESTS, rid))?.status).toBe("expired");
+    });
+
+    it("ignores expired tokens minted for a different request", async () => {
+        const testEnv = env();
+        stubHalo();
+        const first = await mint(testEnv);
+        const second = await mint(testEnv);
+        const expiredForFirst = await signBookingToken(
+            {
+                rid: first.rid,
+                ticketId: 42,
+                agentIds: [7, 9],
+                appointmentTypeId: 3,
+                exp: Math.floor(Date.now() / 1000) - 10,
+            },
+            SECRET,
+        );
+        // Cross-rid replay: 401, and neither record flips.
+        const response = await getSlots(testEnv, second.rid, expiredForFirst);
+        expect(response.status).toBe(401);
+        expect(response.json.error).toBe("invalid-token");
+        expect((await getBookingRequest(testEnv.BOOKING_REQUESTS, second.rid))?.status).toBe(
+            "pending",
+        );
+        expect((await getBookingRequest(testEnv.BOOKING_REQUESTS, first.rid))?.status).toBe(
+            "pending",
+        );
     });
 
     it("answers cancelled and booked records distinctly", async () => {
@@ -390,6 +420,15 @@ describe("book endpoint", () => {
                 })
             ).status,
         ).toBe(400);
+        // Grid-aligned but never offered (slots only offers 15/30/45/60).
+        const marathon = await postBook(testEnv, rid, {
+            token,
+            agentId: slot.agentId,
+            start: "2026-10-06T09:00:00.000Z",
+            end: "2026-10-06T12:00:00.000Z",
+        });
+        expect(marathon.status).toBe(400);
+        expect(marathon.json.error).toBe("invalid-slot");
         // Malformed JSON.
         const malformed = await worker.fetch(
             new Request(`https://portal.test/api/book/requests/${rid}/book`, {
@@ -407,6 +446,30 @@ describe("book endpoint", () => {
         stubHalo();
         const { rid } = await mint(testEnv);
         expect((await postBook(testEnv, rid, { token: "junk", agentId: 7 })).status).toBe(401);
+    });
+
+    it("rejects slots outside dispatcher business hours", async () => {
+        // 07:00Z Tuesday is 09:00 for a UTC+2 customer but 07:00 for a UTC
+        // dispatcher: in-hours for the picker offset, out for the business.
+        const body = {
+            agentId: 7,
+            start: "2026-10-06T07:00:00.000Z",
+            end: "2026-10-06T07:30:00.000Z",
+            utcOffset: 120,
+        };
+        const utcEnv = env();
+        stubHalo();
+        const utc = await mint(utcEnv, { dispatcherUtcOffset: 0 });
+        const rejected = await postBook(utcEnv, utc.rid, { token: utc.token, ...body });
+        expect(rejected.status).toBe(400);
+        expect(rejected.json.error).toBe("invalid-slot");
+
+        // Control: the same slot books when the dispatcher shares the offset.
+        const localEnv = env();
+        stubHalo();
+        const local = await mint(localEnv, { dispatcherUtcOffset: 120 });
+        const booked = await postBook(localEnv, local.rid, { token: local.token, ...body });
+        expect(booked.status).toBe(201);
     });
 });
 

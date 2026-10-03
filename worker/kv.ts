@@ -11,6 +11,8 @@
 
 export interface KeyValueListResult {
     keys: { name: string }[];
+    list_complete: boolean;
+    cursor?: string;
 }
 
 export interface KeyValueClient {
@@ -18,10 +20,12 @@ export interface KeyValueClient {
     put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
     delete(key: string): Promise<void>;
     /**
-     * Prefix scan shaped like the Cloudflare KV `list({ prefix })` subset,
-     * so the production binding satisfies this interface structurally.
+     * Prefix scan shaped like the Cloudflare KV `list` subset (prefix,
+     * cursor, limit), so the production binding satisfies this interface
+     * structurally. KV returns at most 1000 keys per call; callers that
+     * need every key must follow `cursor` until `list_complete`.
      */
-    list(options: { prefix: string }): Promise<KeyValueListResult>;
+    list(options: { prefix: string; cursor?: string; limit?: number }): Promise<KeyValueListResult>;
 }
 
 export type BookingRequestStatus = "pending" | "booked" | "cancelled" | "expired";
@@ -55,6 +59,12 @@ export interface BookingRequestRecord {
     /** Expiry as epoch seconds; mirrors the booking-link token expiry. */
     exp: number;
     /**
+     * Dispatcher-local minutes east of UTC, captured at mint time. Slots
+     * and book validate business hours in this offset when present (older
+     * records omit it and fall back to the customer offset).
+     */
+    businessOffsetMin?: number;
+    /**
      * First customer page view (claim-on-load). Slice 1 mints `pending`
      * records, which play the "sent" role: the link is issued but unopened.
      * The first validated public view stamps this field (the "clicked" flip);
@@ -72,6 +82,7 @@ export interface NewBookingRequest {
     appointmentTypeId: number;
     sealedTokens: SealedTokenPair;
     exp: number;
+    businessOffsetMin?: number;
 }
 
 /** Booking links live 7 days; KV records expire with them. */
@@ -184,6 +195,9 @@ export async function createBookingRequest(
         createdAt: now.toISOString(),
         updatedAt: now.toISOString(),
         exp: input.exp,
+        ...(input.businessOffsetMin !== undefined
+            ? { businessOffsetMin: input.businessOffsetMin }
+            : {}),
     };
     await kv.put(key, JSON.stringify(record), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
     return record;
@@ -202,7 +216,15 @@ export async function getBookingRequest(
  * (concurrent deletes, partial writes) rather than failing the listing.
  */
 export async function listBookingRequests(kv: KeyValueClient): Promise<BookingRequestRecord[]> {
-    const { keys } = await kv.list({ prefix: BOOKING_REQUEST_PREFIX });
+    // KV lists at most 1000 keys per call: follow the cursor so large
+    // tenants never silently lose requests past the first page.
+    const keys: { name: string }[] = [];
+    let cursor: string | undefined;
+    do {
+        const page = await kv.list({ prefix: BOOKING_REQUEST_PREFIX, cursor });
+        keys.push(...page.keys);
+        cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
     const rows = await Promise.all(
         keys.map(async ({ name }) => {
             const raw = await kv.get(name);

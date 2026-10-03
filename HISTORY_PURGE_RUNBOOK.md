@@ -17,10 +17,11 @@ data; removing the files from HEAD alone leaves every byte recoverable via
 
 ## Scope decision (get this approved first)
 
-- Minimum: purge `api_responses/1_ClientCache.json` (bulk PII + photo blobs).
-- Recommended: also purge `api_responses/4_Tickets.json` (customer/user
-  names), or replace it with a synthetic fixture first and purge the original
-  blobs the same way.
+- Minimum: purge `api_responses/1_ClientCache.json` (bulk PII + photo blobs)
+  AND `api_responses/4_Tickets.json` (customer/end-user names + email).
+  Purging only the ClientCache leaves customer data recoverable from history.
+- Optional: replace `4_Tickets.json` with a synthetic fixture first, then
+  purge the original blobs the same way.
 - `api_responses/2_ViewLists.json` and `3_ViewFilter.json` are structural
   workflow labels with no emails found; include them in the purge only if the
   owner wants the whole directory scrubbed.
@@ -43,13 +44,10 @@ From a fresh mirror clone:
 git clone --mirror <repo-url> purge.git
 cd purge.git
 
-# Purge the PII fixture blobs from ALL refs (minimum scope).
-git filter-repo --invert-paths --path api_responses/1_ClientCache.json
-
-# Recommended wider scope (uncomment to include the tickets export):
-# git filter-repo --invert-paths \
-#   --path api_responses/1_ClientCache.json \
-#   --path api_responses/4_Tickets.json
+# Purge the PII fixture blobs from ALL refs (minimum scope: BOTH files).
+git filter-repo --invert-paths \
+  --path api_responses/1_ClientCache.json \
+  --path api_responses/4_Tickets.json
 ```
 
 `filter-repo` strips the paths from every commit, drops the now-empty
@@ -59,20 +57,23 @@ owner wants that scrubbed too, add `--replace-text` with a mapping file such
 as:
 
 ```sh
-printf 'gocovi\\.halopsa\\.com==>example.halopsa.com\n' > replacements.txt
+# --replace-text matches literally by default: no backslash escapes.
+printf 'gocovi.halopsa.com==>example.halopsa.com\n' > replacements.txt
 git filter-repo --replace-text replacements.txt
 ```
 
 ## Push and verify
 
 ```sh
-# Inspect before pushing: history should no longer mention the file.
-git log --oneline --all -- api_responses/1_ClientCache.json
-git rev-list --objects --all | grep -i clientcache || echo "blobs gone"
+# Inspect before pushing: history should no longer mention either file.
+git log --oneline --all -- api_responses/1_ClientCache.json api_responses/4_Tickets.json
+git rev-list --objects --all | grep -iE 'clientcache|4_tickets' || echo "blobs gone"
 
 # Repack and push every rewritten ref (requires force-push permission).
 git reflog expire --expire=now --all
 git gc --prune=now --aggressive
+# filter-repo strips the origin remote: re-add it before pushing.
+git remote add origin <repo-url>
 git push origin --force --all
 git push origin --force --tags
 ```
@@ -91,8 +92,7 @@ Then on GitHub (or the host in use):
 ```sh
 git clone --mirror <repo-url> purge.git
 cd purge.git
-bfg --delete-files 1_ClientCache.json .
-# BFG wider scope: bfg --delete-files '{1_ClientCache,4_Tickets}.json' .
+bfg --delete-files '{1_ClientCache,4_Tickets}.json' .
 git reflog expire --expire=now --all && git gc --prune=now --aggressive
 git push origin --force --all && git push origin --force --tags
 ```

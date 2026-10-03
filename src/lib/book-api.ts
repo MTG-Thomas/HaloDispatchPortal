@@ -522,6 +522,12 @@ export interface MintBookingArgs {
     agentIds: number[];
     appointmentTypeId: number;
     haloTokenPair: DispatcherTokenPair;
+    /**
+     * Dispatcher-local minutes east of UTC. Defaults to this browser's
+     * offset; the Worker enforces business hours in it so a crafted
+     * customer offset cannot book off-hours appointments.
+     */
+    dispatcherUtcOffset?: number;
     signal?: AbortSignal;
 }
 
@@ -533,6 +539,7 @@ export interface MintBookingResult {
 
 /** Mint a booking link (no dispatcher header: the pair rides in the body). */
 export async function mintBookingRequest(args: MintBookingArgs): Promise<MintBookingResult> {
+    const dispatcherUtcOffset = args.dispatcherUtcOffset ?? -new Date().getTimezoneOffset();
     let response: Response;
     try {
         response = await fetch(`${BOOK_API_BASE}/requests`, {
@@ -543,6 +550,7 @@ export async function mintBookingRequest(args: MintBookingArgs): Promise<MintBoo
                 agentIds: args.agentIds,
                 appointmentTypeId: args.appointmentTypeId,
                 haloTokenPair: args.haloTokenPair,
+                dispatcherUtcOffset,
             }),
             signal: args.signal,
         });
@@ -575,6 +583,7 @@ export interface ResendBookingArgs {
     previous: BookingRequestSummary;
     haloTokenPair: DispatcherTokenPair;
     accessToken: string;
+    dispatcherUtcOffset?: number;
     signal?: AbortSignal;
 }
 
@@ -597,6 +606,7 @@ export async function resendBookingRequest(args: ResendBookingArgs): Promise<Res
         agentIds: args.previous.agentIds,
         appointmentTypeId: args.previous.appointmentTypeId,
         haloTokenPair: args.haloTokenPair,
+        dispatcherUtcOffset: args.dispatcherUtcOffset,
         signal: args.signal,
     });
     if (args.previous.status !== "pending") {

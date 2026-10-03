@@ -12,10 +12,11 @@
  *                      at 48h: 20 * min(1, hoursSinceAction / 48).
  *   Priority   (0-15): boost from priority_id via DEFAULT_PRIORITY_BOOST_MAP.
  *
- * Tuning per tenant: adjust PRIORITY_SCORE_WEIGHTS and
- * DEFAULT_PRIORITY_BOOST_MAP below (Halo priority ids differ per tenant;
- * unknown ids score 0). Missing/invalid dates contribute 0 for their
- * component. The Halo "1899-12-30" sentinel counts as no date.
+ * Tuning per tenant: adjust PRIORITY_SCORE_WEIGHTS and pass a tenant
+ * priority map as the third argument (Halo priority ids differ per
+ * tenant; unknown ids score 0). DEFAULT_PRIORITY_BOOST_MAP is the
+ * fallback when no map is passed. Missing/invalid dates contribute 0 for
+ * their component. The Halo "1899-12-30" sentinel counts as no date.
  */
 
 import { computeSla } from "@/utils/enrich-ticket";
@@ -118,24 +119,32 @@ function scoreStaleness(ticket: ScorableTicket, now: Date): number {
     return stalenessMax * Math.min(1, hours / stalenessSaturationHours);
 }
 
-function scorePriorityBoost(ticket: ScorableTicket): number {
-    return DEFAULT_PRIORITY_BOOST_MAP[ticket.priority_id] ?? 0;
+function scorePriorityBoost(
+    ticket: ScorableTicket,
+    priorityBoostMap: Record<number, number> = DEFAULT_PRIORITY_BOOST_MAP,
+): number {
+    return priorityBoostMap[ticket.priority_id] ?? 0;
 }
 
 /** Full component breakdown plus the rounded 0-100 total. */
 export function scoreBreakdown(
     ticket: ScorableTicket,
     now: Date = new Date(),
+    priorityBoostMap: Record<number, number> = DEFAULT_PRIORITY_BOOST_MAP,
 ): PriorityScoreBreakdown {
     const sla = scoreSla(ticket, now);
     const age = scoreAge(ticket, now);
     const staleness = scoreStaleness(ticket, now);
-    const priorityBoost = scorePriorityBoost(ticket);
+    const priorityBoost = scorePriorityBoost(ticket, priorityBoostMap);
     const total = Math.max(0, Math.min(100, Math.round(sla + age + staleness + priorityBoost)));
     return { sla, age, staleness, priorityBoost, total };
 }
 
 /** Dispatch priority score, 0-100 (higher = needs attention sooner). */
-export function scoreTicket(ticket: ScorableTicket, now: Date = new Date()): number {
-    return scoreBreakdown(ticket, now).total;
+export function scoreTicket(
+    ticket: ScorableTicket,
+    now: Date = new Date(),
+    priorityBoostMap: Record<number, number> = DEFAULT_PRIORITY_BOOST_MAP,
+): number {
+    return scoreBreakdown(ticket, now, priorityBoostMap).total;
 }

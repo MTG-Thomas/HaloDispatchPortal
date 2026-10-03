@@ -56,9 +56,12 @@ describe("booking tokens", () => {
     });
 
     it("rejects an expired token", async () => {
-        const token = await signBookingToken(payload({ exp: NOW_SEC - 1 }), SECRET);
+        const expired = payload({ exp: NOW_SEC - 1 });
+        const token = await signBookingToken(expired, SECRET);
         const result = await verifyBookingToken(token, SECRET, NOW_SEC);
-        expect(result).toEqual({ ok: false, reason: "expired" });
+        // The payload rides along so the router can bind the expiry flip
+        // to the token's own rid.
+        expect(result).toEqual({ ok: false, reason: "expired", payload: expired });
     });
 
     it("rejects malformed tokens", async () => {

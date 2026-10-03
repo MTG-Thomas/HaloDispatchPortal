@@ -18,7 +18,8 @@ export interface BookingTokenPayload {
 
 export type VerifyTokenResult =
     | { ok: true; payload: BookingTokenPayload }
-    | { ok: false; reason: "malformed" | "invalid-signature" | "expired" | "invalid-payload" };
+    | { ok: false; reason: "expired"; payload: BookingTokenPayload }
+    | { ok: false; reason: "malformed" | "invalid-signature" | "invalid-payload" };
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -123,7 +124,9 @@ export async function verifyBookingToken(
         return { ok: false, reason: "invalid-payload" };
     }
     if (payload.exp <= nowSec) {
-        return { ok: false, reason: "expired" };
+        // Carry the payload so callers can bind the expiry flip to the
+        // token's own rid (an expired token for rid A must never flip rid B).
+        return { ok: false, reason: "expired", payload };
     }
     return { ok: true, payload };
 }

@@ -365,6 +365,26 @@ describe("dispatcher tracking", () => {
                 agentIds: [7],
                 appointmentTypeId: 3,
                 haloTokenPair: pair,
+                dispatcherUtcOffset: -new Date().getTimezoneOffset(),
+            });
+        });
+
+        it("sends an explicit dispatcher offset when provided", async () => {
+            const impl = mockFetchOnce(201, {
+                rid: "rid-9",
+                token: "tok-9",
+                expiresAt: "2026-10-10T00:00:00.000Z",
+            });
+            await mintBookingRequest({
+                ticketId: 42,
+                agentIds: [7],
+                appointmentTypeId: 3,
+                haloTokenPair: pair,
+                dispatcherUtcOffset: -300,
+            });
+            const [, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
+            expect(JSON.parse(init.body as string)).toMatchObject({
+                dispatcherUtcOffset: -300,
             });
         });
 

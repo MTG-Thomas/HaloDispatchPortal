@@ -1,8 +1,13 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import worker, { type BookingEnv } from "../entry";
 import { createBookingRequest, sealTokenPair, type HaloTokenPair } from "../kv";
+import { resetRateLimitsForTests } from "../ratelimit";
 import { fakeKv } from "./fake-kv";
+
+beforeEach(() => {
+    resetRateLimitsForTests();
+});
 
 const SECRET = "test-secret-for-list";
 
@@ -38,11 +43,17 @@ async function seed(
 async function list(
     testEnv: BookingEnv,
     accessToken?: string,
+    ip?: string,
 ): Promise<{ status: number; json: Record<string, unknown> }> {
+    const headers: Record<string, string> = {};
+    if (accessToken) {
+        headers.Authorization = `Bearer ${accessToken}`;
+    }
+    if (ip) {
+        headers["cf-connecting-ip"] = ip;
+    }
     const response = await worker.fetch(
-        new Request("https://portal.test/api/book/requests", {
-            headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
-        }),
+        new Request("https://portal.test/api/book/requests", { headers }),
         testEnv,
     );
     return { status: response.status, json: (await response.json()) as Record<string, unknown> };
@@ -115,5 +126,18 @@ describe("dispatcher list endpoint", () => {
         expect(status).toBe(200);
         const requests = json.requests as Record<string, unknown>[];
         expect(requests.map((row) => row.rid)).toEqual(["rid-good"]);
+    });
+
+    it("rate-limits the full-scan listing per IP", async () => {
+        const testEnv = env();
+        await seed(testEnv, "rid-a1", PAIR_A, 42);
+        for (let i = 0; i < 30; i++) {
+            expect((await list(testEnv, "a-access", "10.8.8.8")).status).toBe(200);
+        }
+        const limited = await list(testEnv, "a-access", "10.8.8.8");
+        expect(limited.status).toBe(429);
+        expect(limited.json.error).toBe("rate-limited");
+        // A different IP is unaffected.
+        expect((await list(testEnv, "a-access", "10.8.8.9")).status).toBe(200);
     });
 });

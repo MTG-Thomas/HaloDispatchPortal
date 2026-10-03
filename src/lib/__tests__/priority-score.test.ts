@@ -99,6 +99,17 @@ describe("scoreTicket", () => {
         expect(scoreBreakdown(ticket({ priority_id: 999 }), NOW).priorityBoost).toBe(0);
     });
 
+    it("accepts a tenant priority map with the default as fallback", () => {
+        const tenantMap = { 10: 15, 20: 7 };
+        expect(scoreBreakdown(ticket({ priority_id: 10 }), NOW, tenantMap).priorityBoost).toBe(15);
+        expect(scoreBreakdown(ticket({ priority_id: 20 }), NOW, tenantMap).priorityBoost).toBe(7);
+        // Ids outside the tenant map score 0 even when the default knows them.
+        expect(scoreBreakdown(ticket({ priority_id: 1 }), NOW, tenantMap).priorityBoost).toBe(0);
+        expect(scoreTicket(ticket({ priority_id: 10 }), NOW, tenantMap)).toBe(
+            scoreBreakdown(ticket({ priority_id: 10 }), NOW, tenantMap).total,
+        );
+    });
+
     it("is deterministic with an injected now and clamps to 0-100", () => {
         const fixture = ticket({
             dateoccurred: "2026-09-01T12:00:00.000Z",

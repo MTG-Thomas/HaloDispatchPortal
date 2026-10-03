@@ -11,6 +11,10 @@
  *   `parseHaloUtcDate` treats Halo's datetimes (UTC even without a `Z`).
  * - Client-local day boundaries come from the caller's `utcOffsetMin`
  *   (same convention as the SPA `getUtcOffset` / Halo `utcoffset` param).
+ * - When the record carries the dispatcher's mint-time offset
+ *   (`businessOffsetMin`), slots must also sit inside business hours in
+ *   that offset, so a crafted customer offset cannot book 02:00
+ *   business-time appointments.
  */
 
 import { DEFAULT_CALENDAR_CONFIG } from "../src/lib/calendarConfig";
@@ -52,6 +56,13 @@ export interface ComputeSlotsInput {
     days?: number;
     /** Slot length in minutes. Default 30 (dispatch default duration). */
     durationMin?: number;
+    /**
+     * Dispatcher-local minutes east of UTC, captured at mint time. When set,
+     * offered slots must ALSO fall inside business hours in this offset, so
+     * a customer cannot pick a UTC offset that makes 02:00 business time
+     * look like 09:00 local. Day grouping stays in the customer offset.
+     */
+    businessOffsetMin?: number;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -94,6 +105,29 @@ function overlaps(aStart: number, aEnd: number, bStart: number, bEnd: number): b
 }
 
 /**
+ * True when [startMs, endMs) sits on a Mon-Fri working day fully inside the
+ * 09:00-17:00 window, measured in the given UTC offset. No grid, past, or
+ * overlap checks — the second-offset business-hours gate shared by offer and
+ * book paths.
+ */
+export function withinBusinessHours(startMs: number, endMs: number, offsetMin: number): boolean {
+    if (!(endMs > startMs)) {
+        return false;
+    }
+    const { startMin, endMin } = workdayWindowMinutes();
+    const offsetMs = offsetMin * 60_000;
+    const localStart = startMs + offsetMs;
+    const localMidnight = Math.floor(localStart / DAY_MS) * DAY_MS;
+    const weekday = new Date(localMidnight).getUTCDay();
+    if (weekday === 0 || weekday === 6) {
+        return false;
+    }
+    const startMinOfDay = Math.round((localStart - localMidnight) / 60_000);
+    const endMinOfDay = Math.round((endMs + offsetMs - localMidnight) / 60_000);
+    return startMinOfDay >= startMin && endMinOfDay <= endMin && endMinOfDay > startMinOfDay;
+}
+
+/**
  * Offered slots per day (only days with at least one free slot are returned).
  * A slot is offered when it starts in the future, fits inside working hours
  * on a Mon-Fri working day, aligns to the calendar grid, and overlaps no busy
@@ -128,6 +162,13 @@ export function computeSlots(input: ComputeSlotsInput): DaySlots[] {
                     continue;
                 }
                 const endMs = startMs + durationMin * 60_000;
+                if (
+                    input.businessOffsetMin !== undefined &&
+                    input.businessOffsetMin !== input.utcOffsetMin &&
+                    !withinBusinessHours(startMs, endMs, input.businessOffsetMin)
+                ) {
+                    continue;
+                }
                 if (agentBusy.some((b) => overlaps(startMs, endMs, b.startMs, b.endMs))) {
                     continue;
                 }
@@ -157,6 +198,12 @@ export interface ValidateSlotInput {
     agentId: number;
     startMs: number;
     endMs: number;
+    /**
+     * Dispatcher-local offset (see ComputeSlotsInput). When set and different
+     * from `utcOffsetMin`, the slot must also sit inside business hours in
+     * this offset. Grid alignment stays in the customer offset.
+     */
+    businessOffsetMin?: number;
 }
 
 /**
@@ -183,6 +230,13 @@ export function validateSlot(input: ValidateSlotInput): SlotCheck {
         endMinOfDay > endMin ||
         endMinOfDay <= startMinOfDay ||
         (startMinOfDay - startMin) % gridMin !== 0
+    ) {
+        return { ok: false, reason: "hours" };
+    }
+    if (
+        input.businessOffsetMin !== undefined &&
+        input.businessOffsetMin !== input.utcOffsetMin &&
+        !withinBusinessHours(input.startMs, input.endMs, input.businessOffsetMin)
     ) {
         return { ok: false, reason: "hours" };
     }

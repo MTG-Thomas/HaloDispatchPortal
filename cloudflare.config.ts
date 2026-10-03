@@ -8,7 +8,9 @@ import * as entrypoint from "./worker/entry.ts" with { type: "cf-worker" };
  * the Worker make its own Halo calls for booking (slices 1-3: mint,
  * status, cancel, list, slots, book).
  *
- * Deploy: npm run build:cf && cf deploy
+ * Deploy: npm run build:cf && cf deploy --prebuilt --mode production
+ * (--prebuilt is required: a bare `cf deploy` rebuilds without
+ * CF_WORKERS_BUILD=1, dropping the Cloudflare Vite plugin output).
  * Preview: https://halo-dispatch-portal.<account>.workers.dev
  * Custom:  https://dispatch.midtowntg.com
  */

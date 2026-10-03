@@ -59,6 +59,8 @@ export interface MintRequest {
     agentIds: number[];
     appointmentTypeId: number;
     haloTokenPair: HaloTokenPair;
+    /** Dispatcher-local minutes east of UTC (optional; stored for hours checks). */
+    dispatcherUtcOffset?: number;
 }
 
 export type MintValidation =
@@ -105,6 +107,16 @@ export function validateMintRequest(body: unknown): MintValidation {
     if (!isTokenPair(candidate.haloTokenPair)) {
         details.push("haloTokenPair must include non-empty access_token and refresh_token");
     }
+    const dispatcherUtcOffset = candidate.dispatcherUtcOffset;
+    if (
+        dispatcherUtcOffset !== undefined &&
+        (typeof dispatcherUtcOffset !== "number" ||
+            !Number.isInteger(dispatcherUtcOffset) ||
+            dispatcherUtcOffset < -840 ||
+            dispatcherUtcOffset > 840)
+    ) {
+        details.push("dispatcherUtcOffset must be an integer between -840 and 840");
+    }
     if (details.length > 0) {
         return { ok: false, error: "Invalid booking request", details };
     }
@@ -115,6 +127,7 @@ export function validateMintRequest(body: unknown): MintValidation {
             agentIds: candidate.agentIds as number[],
             appointmentTypeId: candidate.appointmentTypeId as number,
             haloTokenPair: candidate.haloTokenPair as HaloTokenPair,
+            ...(typeof dispatcherUtcOffset === "number" ? { dispatcherUtcOffset } : {}),
         },
     };
 }
@@ -223,6 +236,9 @@ async function handleMint(request: Request, env: BookingEnv): Promise<Response> 
         appointmentTypeId: validation.value.appointmentTypeId,
         sealedTokens,
         exp,
+        ...(validation.value.dispatcherUtcOffset !== undefined
+            ? { businessOffsetMin: validation.value.dispatcherUtcOffset }
+            : {}),
     });
     const token = await signBookingToken(
         {
@@ -363,6 +379,11 @@ async function resolvePublicBooking(
     const verified = await verifyBookingToken(token, env.SECRET);
     if (!verified.ok) {
         if (verified.reason === "expired") {
+            // Bind the flip to the token's own rid: an expired token for a
+            // different request must not flip this record (or leak 410s).
+            if (verified.payload.rid !== rid) {
+                return { ok: false, response: json(401, { error: "invalid-token" }) };
+            }
             await setBookingStatus(env.BOOKING_REQUESTS, rid, "expired").catch(() => undefined);
             return { ok: false, response: json(410, { error: "expired", rid }) };
         }
@@ -517,6 +538,7 @@ async function handleSlots(
         utcOffsetMin,
         days,
         durationMin,
+        businessOffsetMin: context.record.businessOffsetMin,
     });
     return json(200, {
         rid,
@@ -560,7 +582,9 @@ function parseBookBody(
         return { ok: false, error: "invalid-slot" };
     }
     const durationMin = Math.round((endMs - startMs) / 60_000);
-    if (durationMin < 15 || durationMin > 480 || durationMin % 15 !== 0) {
+    // Book only what slots offers: the dispatch duration presets, not any
+    // 15-minute multiple up to 8 hours.
+    if (!(ALLOWED_SLOT_DURATIONS as readonly number[]).includes(durationMin)) {
         return { ok: false, error: "invalid-slot" };
     }
     const utcOffsetMin = candidate.utcOffset === undefined ? 0 : candidate.utcOffset;
@@ -654,6 +678,7 @@ async function handleBook(
         agentId: parsed.value.agentId,
         startMs: parsed.value.startMs,
         endMs: parsed.value.endMs,
+        businessOffsetMin: context.record.businessOffsetMin,
     });
     if (!check.ok) {
         return check.reason === "taken"
@@ -739,15 +764,29 @@ export default {
             return handleMint(request, env);
         }
         if (request.method === "GET" && url.pathname === "/api/book/requests") {
+            // List scans + decrypts every record before comparing tokens, so
+            // it gets the same per-IP limit as the public routes.
+            const limited = await publicRateLimit(request, env);
+            if (limited) {
+                return limited;
+            }
             return handleList(request, env);
         }
         const match = REQUEST_ROUTE.exec(url.pathname);
         if (match) {
             const [, rid, action] = match;
             if (request.method === "GET" && action === "status") {
+                const limited = await publicRateLimit(request, env);
+                if (limited) {
+                    return limited;
+                }
                 return handleStatus(request, env, rid);
             }
             if (request.method === "POST" && action === "cancel") {
+                const limited = await publicRateLimit(request, env);
+                if (limited) {
+                    return limited;
+                }
                 return handleCancel(request, env, rid);
             }
             if (request.method === "GET" && action === "slots") {

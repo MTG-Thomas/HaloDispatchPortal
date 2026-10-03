@@ -39,8 +39,22 @@ export function resetRateLimitsForTests(): void {
     memory.clear();
 }
 
+/**
+ * Cap on tracked IPs per isolate. Past this, fully-expired entries are
+ * swept so one-off visitors cannot grow the map without bound in a
+ * long-lived isolate.
+ */
+export const RATE_LIMIT_MEMORY_MAX_IPS = 10000;
+
 function memoryAllows(ip: string, nowMs: number): boolean {
     const windowStart = nowMs - RATE_LIMIT_WINDOW_SEC * 1000;
+    if (!memory.has(ip) && memory.size >= RATE_LIMIT_MEMORY_MAX_IPS) {
+        for (const [key, stamps] of memory) {
+            if (stamps.every((t) => t <= windowStart)) {
+                memory.delete(key);
+            }
+        }
+    }
     const kept = (memory.get(ip) ?? []).filter((t) => t > windowStart);
     if (kept.length >= RATE_LIMIT_MEMORY_MAX) {
         memory.set(ip, kept);

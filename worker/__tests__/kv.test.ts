@@ -5,6 +5,7 @@ import {
     bookingRequestKey,
     createBookingRequest,
     getBookingRequest,
+    listBookingRequests,
     markBookingBooked,
     markBookingClicked,
     openTokenPair,
@@ -12,6 +13,7 @@ import {
     setBookingStatus,
     updateSealedTokens,
     type HaloTokenPair,
+    type KeyValueClient,
 } from "../kv";
 import { fakeKv } from "./fake-kv";
 
@@ -160,6 +162,46 @@ describe("claim-on-load and single-book redeem", () => {
         await expect(openTokenPair(updated.sealedTokens, SECRET)).resolves.toMatchObject({
             access_token: "access-new",
         });
+    });
+});
+
+describe("listBookingRequests", () => {
+    it("stores the dispatcher offset when minted with one", async () => {
+        const kv = fakeKv();
+        const record = await createBookingRequest(kv, {
+            rid: "rid-tz",
+            ticketId: 42,
+            agentIds: [7],
+            appointmentTypeId: 3,
+            sealedTokens: await sealTokenPair(pair(), SECRET),
+            exp: 1_790_003_600,
+            businessOffsetMin: -300,
+        });
+        expect(record.businessOffsetMin).toBe(-300);
+        await expect(getBookingRequest(kv, "rid-tz")).resolves.toMatchObject({
+            businessOffsetMin: -300,
+        });
+    });
+
+    it("follows the KV cursor past the first page", async () => {
+        const kv = fakeKv();
+        for (const rid of ["rid-p1", "rid-p2", "rid-p3"]) {
+            await createBookingRequest(kv, {
+                rid,
+                ticketId: 42,
+                agentIds: [7],
+                appointmentTypeId: 3,
+                sealedTokens: await sealTokenPair(pair(), SECRET),
+                exp: 1_790_003_600,
+            });
+        }
+        // Force two-key pages regardless of server defaults.
+        const paging: KeyValueClient = {
+            ...kv,
+            list: (options) => kv.list({ ...options, limit: 2 }),
+        };
+        const records = await listBookingRequests(paging);
+        expect(records.map((r) => r.rid).sort()).toEqual(["rid-p1", "rid-p2", "rid-p3"]);
     });
 });
 

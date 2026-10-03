@@ -5,6 +5,7 @@ import {
     computeSlots,
     parseHaloDateMs,
     validateSlot,
+    withinBusinessHours,
     workdayWindowMinutes,
 } from "../slots";
 
@@ -138,6 +139,70 @@ describe("computeSlots", () => {
         expect(days[0].date).toBe("2026-10-05");
         expect(days[0].slots[0].start).toBe("2026-10-05T14:00:00.000Z");
     });
+
+    it("also enforces business hours in the dispatcher offset", () => {
+        // Customer UTC+1, dispatcher UTC: local 09:00 is 08:00Z, outside
+        // business hours, so the first offered slot starts at 09:00Z.
+        const days = computeSlots({
+            agentIds: [7],
+            busy: [],
+            nowMs: MONDAY,
+            utcOffsetMin: 60,
+            businessOffsetMin: 0,
+            days: 1,
+        });
+        expect(days[0].slots[0].start).toBe("2026-10-05T09:00:00.000Z");
+        // A customer offset with no business-hours overlap offers nothing.
+        expect(
+            computeSlots({
+                agentIds: [7],
+                busy: [],
+                nowMs: MONDAY,
+                utcOffsetMin: 600,
+                businessOffsetMin: 0,
+                days: 1,
+            }),
+        ).toEqual([]);
+    });
+});
+
+describe("withinBusinessHours", () => {
+    it("accepts in-window weekday slots", () => {
+        expect(
+            withinBusinessHours(
+                Date.parse("2026-10-05T09:00:00.000Z"),
+                Date.parse("2026-10-05T09:30:00.000Z"),
+                0,
+            ),
+        ).toBe(true);
+        // Same instant measured in UTC-5 is 04:00 local: out of hours.
+        expect(
+            withinBusinessHours(
+                Date.parse("2026-10-05T09:00:00.000Z"),
+                Date.parse("2026-10-05T09:30:00.000Z"),
+                -300,
+            ),
+        ).toBe(false);
+    });
+
+    it("rejects weekends and overhanging slots", () => {
+        // Saturday.
+        expect(
+            withinBusinessHours(
+                Date.parse("2026-10-10T09:00:00.000Z"),
+                Date.parse("2026-10-10T09:30:00.000Z"),
+                0,
+            ),
+        ).toBe(false);
+        // Ends after close.
+        expect(
+            withinBusinessHours(
+                Date.parse("2026-10-05T16:45:00.000Z"),
+                Date.parse("2026-10-05T17:15:00.000Z"),
+                0,
+            ),
+        ).toBe(false);
+    });
 });
 
 describe("validateSlot", () => {
@@ -184,6 +249,17 @@ describe("validateSlot", () => {
                 endMs: Date.parse("2026-10-10T09:30:00.000Z"),
             }),
         ).toEqual({ ok: false, reason: "hours" });
+    });
+
+    it("rejects slots outside dispatcher business hours", () => {
+        // 09:00Z is in-hours for a UTC customer but 04:00 for a UTC-5
+        // dispatcher: a crafted customer offset must not book it.
+        expect(validateSlot({ ...good, businessOffsetMin: -300 })).toEqual({
+            ok: false,
+            reason: "hours",
+        });
+        // Matching offsets are a no-op.
+        expect(validateSlot({ ...good, businessOffsetMin: 0 })).toEqual({ ok: true });
     });
 
     it("rejects overlapping slots as taken", () => {
