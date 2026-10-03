@@ -3,8 +3,10 @@ import { formatDistanceToNow } from "date-fns";
 import { Inbox, Loader2, RefreshCw, Send, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { BookingStatusChip } from "@/components/booking/BookingStatusChip";
+import { SendBookingLinkMenu } from "@/components/booking/SendBookingLinkMenu";
 import { useBookingRequests, type BookingTracker } from "@/hooks/useBookingRequests";
 import { isBookingOpen, type BookingRequestSummary } from "@/lib/book-api";
+import { sendBookingLink, type BookingSendChannel } from "@/lib/send-booking-link";
 import { useDispatchStore } from "@/stores/useDispatchStore";
 import { useConfigStore } from "@/stores/configStore";
 import { toast } from "sonner";
@@ -71,6 +73,30 @@ export function OutstandingRequests({ tracker }: { tracker?: BookingTracker } = 
             toast.success(`Booking request for ticket ${summary.ticketId} cancelled.`);
         } catch {
             toast.error("Failed to cancel booking request.");
+        }
+    };
+
+    const onSend = async (summary: BookingRequestSummary, channel: BookingSendChannel) => {
+        try {
+            const { oldInvalidated } = await sendBookingLink({
+                ticketId: summary.ticketId,
+                channel,
+                origin: window.location.origin,
+                mintFresh: () => booking.resend(summary),
+                open: (href) => {
+                    window.location.href = href;
+                },
+            });
+            toast.success(
+                channel === "sms"
+                    ? "Opening text message with booking link…"
+                    : "Opening email with booking link…",
+            );
+            if (!oldInvalidated) {
+                toast.warning("The old link is still live — cancel it from this queue.");
+            }
+        } catch {
+            toast.error("Failed to send booking link.");
         }
     };
 
@@ -179,6 +205,15 @@ export function OutstandingRequests({ tracker }: { tracker?: BookingTracker } = 
                                     <td className="px-3 py-2 text-right whitespace-nowrap">
                                         {open || resendable ? (
                                             <div className="flex items-center justify-end gap-1">
+                                                {resendable && (
+                                                    <SendBookingLinkMenu
+                                                        ticketId={row.ticketId}
+                                                        disabled={busy}
+                                                        onSelect={(channel) =>
+                                                            void onSend(row, channel)
+                                                        }
+                                                    />
+                                                )}
                                                 {resendable && (
                                                     <Button
                                                         variant="ghost"

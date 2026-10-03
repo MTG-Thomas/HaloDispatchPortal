@@ -57,6 +57,8 @@ import { useBookingNotify } from "@/hooks/useBookingNotify";
 import { Switch } from "@/components/ui/switch";
 import { BookingStatusChip } from "@/components/booking/BookingStatusChip";
 import { OutstandingRequests } from "@/components/booking/OutstandingRequests";
+import { SendBookingLinkMenu } from "@/components/booking/SendBookingLinkMenu";
+import { sendBookingLink, type BookingSendChannel } from "@/lib/send-booking-link";
 import type { EnrichedTicket } from "@/types/halo";
 import type { Ticket } from "@/types";
 import { draggable } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
@@ -87,6 +89,7 @@ interface DraggableTicketRowProps {
     bookingBusy: boolean;
     onBookingResend: (summary: BookingRequestSummary) => void;
     onBookingCancel: (summary: BookingRequestSummary) => void;
+    onBookingSend: (summary: BookingRequestSummary, channel: BookingSendChannel) => void;
     onBookingMinted: () => void;
 }
 
@@ -99,6 +102,7 @@ function DraggableTicketRow({
     bookingBusy,
     onBookingResend,
     onBookingCancel,
+    onBookingSend,
     onBookingMinted,
 }: DraggableTicketRowProps) {
     // Convert EnrichedTicket to Ticket format for drag and drop
@@ -157,6 +161,7 @@ function DraggableTicketRow({
                     busy={bookingBusy}
                     onResend={onBookingResend}
                     onCancel={onBookingCancel}
+                    onSend={onBookingSend}
                     onMinted={onBookingMinted}
                 />
             </td>
@@ -506,15 +511,24 @@ interface BookingCellProps {
     busy: boolean;
     onResend: (summary: BookingRequestSummary) => void;
     onCancel: (summary: BookingRequestSummary) => void;
+    onSend: (summary: BookingRequestSummary, channel: BookingSendChannel) => void;
     onMinted: () => void;
 }
 
 /**
  * Actions cell: the tracking chip (when this ticket has a request) plus
- * resend/cancel. Cancel is open-only; resend also covers expired
+ * resend/cancel/send. Cancel is open-only; resend and send also cover expired
  * (resend-as-new). Booked/cancelled rows show the chip alone.
  */
-function BookingCell({ ticket, summary, busy, onResend, onCancel, onMinted }: BookingCellProps) {
+function BookingCell({
+    ticket,
+    summary,
+    busy,
+    onResend,
+    onCancel,
+    onSend,
+    onMinted,
+}: BookingCellProps) {
     const display = summary ? bookingDisplayStatus(summary) : null;
     const canCancel = summary && display !== null && isBookingOpen(summary);
     const canResend = summary && (isBookingOpen(summary) || display === "expired");
@@ -523,6 +537,13 @@ function BookingCell({ ticket, summary, busy, onResend, onCancel, onMinted }: Bo
         <div className="flex items-center justify-end gap-1">
             {summary && (
                 <BookingStatusChip summary={summary} testId={`booking-status-${ticket.id}`} />
+            )}
+            {canResend && (
+                <SendBookingLinkMenu
+                    ticketId={ticket.id}
+                    disabled={busy}
+                    onSelect={(channel) => onSend(summary, channel)}
+                />
             )}
             {canResend && (
                 <Button
@@ -643,6 +664,33 @@ export function TicketList() {
             toast.success(`Booking request for ticket ${summary.ticketId} cancelled.`);
         } catch {
             toast.error("Failed to cancel booking request.");
+        }
+    };
+
+    const handleBookingSend = async (
+        summary: BookingRequestSummary,
+        channel: BookingSendChannel,
+    ) => {
+        try {
+            const { oldInvalidated } = await sendBookingLink({
+                ticketId: summary.ticketId,
+                channel,
+                origin: window.location.origin,
+                mintFresh: () => booking.resend(summary),
+                open: (href) => {
+                    window.location.href = href;
+                },
+            });
+            toast.success(
+                channel === "sms"
+                    ? "Opening text message with booking link…"
+                    : "Opening email with booking link…",
+            );
+            if (!oldInvalidated) {
+                toast.warning("The old link is still live — cancel it from the queue.");
+            }
+        } catch {
+            toast.error("Failed to send booking link.");
         }
     };
 
@@ -1089,6 +1137,7 @@ export function TicketList() {
                                                 }
                                                 onBookingResend={handleBookingResend}
                                                 onBookingCancel={handleBookingCancel}
+                                                onBookingSend={handleBookingSend}
                                                 onBookingMinted={() => void booking.refresh()}
                                             />
                                         ))}
