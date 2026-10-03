@@ -14,7 +14,8 @@
         "test:coverage": "vitest run --coverage",
         "test:e2e": "playwright test",
         "format": "prettier --write .",
-        "format:check": "prettier --check ."
+        "format:check": "prettier --check .",
+        "build:cf": "tsc -b && CF_WORKERS_BUILD=1 vite build"
     },
     "lint-staged": {
         "*.{ts,tsx,js,jsx,json,css,md,yml,yaml}": [
@@ -55,6 +56,7 @@
         "zustand": "^5.0.8"
     },
     "devDependencies": {
+        "@cloudflare/vite-plugin": "^2.0.0-beta.sha-52b0dc0e9",
         "@eslint/js": "^9.36.0",
         "@playwright/test": "^1.63.0",
         "@testing-library/jest-dom": "^7.0.1",
@@ -65,6 +67,7 @@
         "@types/react-dom": "^19.1.9",
         "@vitejs/plugin-react": "^5.0.4",
         "@vitest/coverage-v8": "^5.0.3",
+        "cf": "^1.0.0-beta.12",
         "eslint": "^9.36.0",
         "eslint-plugin-react-hooks": "^5.2.0",
         "eslint-plugin-react-refresh": "^0.4.22",

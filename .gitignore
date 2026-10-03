@@ -23,6 +23,9 @@ test-results
 playwright-report
 playwright/.cache
 
+# Cloudflare build output (cf build / build:cf)
+.cloudflare/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
