@@ -451,3 +451,30 @@ export function bookingWindowIso(
         endDate: new Date(startMs + days * DAY_MS).toISOString(),
     };
 }
+
+/**
+ * Window length (in days) so `computeSlots` covers every occurrence date.
+ * Occurrence dates are client-local YYYY-MM-DD, the same strings `computeSlots`
+ * emits as day labels; past occurrences need no extra days. The caller caps
+ * the result at the slots `days` maximum.
+ */
+export function daysToCoverOccurrences(
+    nowMs: number,
+    utcOffsetMin: number,
+    occurrences: string[],
+    fallbackDays: number,
+): number {
+    const todayLocal = Math.floor((nowMs + utcOffsetMin * 60_000) / DAY_MS) * DAY_MS;
+    let needed = fallbackDays;
+    for (const date of occurrences) {
+        const occurrenceMs = Date.parse(`${date}T00:00:00.000Z`);
+        if (!Number.isFinite(occurrenceMs)) {
+            continue;
+        }
+        const diffDays = Math.round((occurrenceMs - todayLocal) / DAY_MS);
+        if (diffDays >= 0) {
+            needed = Math.max(needed, diffDays + 1);
+        }
+    }
+    return needed;
+}

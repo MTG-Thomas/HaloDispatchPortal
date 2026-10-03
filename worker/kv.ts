@@ -84,6 +84,16 @@ export interface BookingRequestRecord {
      * legacy pair-minted records omit it and keep the access-token fallback.
      */
     sessionId?: string;
+    /**
+     * Series (recurring) request: client-local YYYY-MM-DD dates the customer
+     * must pick one slot per. Absent for single-book requests.
+     */
+    occurrences?: string[];
+    /**
+     * Halo appointment ids created by a series redeem, in booking order.
+     * When set, `bookedAppointmentId` mirrors the first id for replay compat.
+     */
+    bookedAppointmentIds?: number[];
 }
 
 export interface NewBookingRequest {
@@ -96,6 +106,7 @@ export interface NewBookingRequest {
     businessOffsetMin?: number;
     bufferMin?: number;
     sessionId?: string;
+    occurrences?: string[];
 }
 
 /** Booking links live 7 days; KV records expire with them. */
@@ -240,6 +251,7 @@ export async function createBookingRequest(
             : {}),
         ...(input.bufferMin !== undefined ? { bufferMin: input.bufferMin } : {}),
         ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
+        ...(input.occurrences !== undefined ? { occurrences: input.occurrences } : {}),
     };
     await kv.put(key, JSON.stringify(record), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
     return record;
@@ -401,6 +413,41 @@ export async function extendBookingExpiry(
     const updated: BookingRequestRecord = {
         ...record,
         exp: newExp,
+        updatedAt: now.toISOString(),
+    };
+    await kv.put(key, JSON.stringify(updated), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
+    return updated;
+}
+
+/**
+ * Series redeem: move `pending` -> `booked` with the per-occurrence Halo
+ * appointment ids (best-effort order). `bookedAppointmentId` mirrors the
+ * first id so single-book replay readers keep working. Throws `not-found` /
+ * `illegal-transition`.
+ */
+export async function markBookingSeriesBooked(
+    kv: KeyValueClient,
+    rid: string,
+    appointmentIds: number[],
+    now: Date = new Date(),
+): Promise<BookingRequestRecord> {
+    const key = bookingRequestKey(rid);
+    const raw = await kv.get(key);
+    if (raw === null) {
+        throw new BookingStateError("not-found", `Booking request ${rid} not found`);
+    }
+    const record = parseRecord(raw);
+    if (record.status !== "pending") {
+        throw new BookingStateError(
+            "illegal-transition",
+            `Cannot book request ${rid} from ${record.status}`,
+        );
+    }
+    const updated: BookingRequestRecord = {
+        ...record,
+        status: "booked",
+        bookedAppointmentId: appointmentIds[0],
+        bookedAppointmentIds: [...appointmentIds],
         updatedAt: now.toISOString(),
     };
     await kv.put(key, JSON.stringify(updated), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });

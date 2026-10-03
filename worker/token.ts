@@ -14,6 +14,8 @@ export interface BookingTokenPayload {
     appointmentTypeId: number;
     /** Expiry as epoch seconds. */
     exp: number;
+    /** Series (recurring) occurrence dates, when minted as a series. */
+    occurrences?: string[];
 }
 
 export type VerifyTokenResult =
@@ -67,7 +69,9 @@ function isPayloadShape(value: unknown): value is BookingTokenPayload {
         typeof v.appointmentTypeId === "number" &&
         Number.isInteger(v.appointmentTypeId) &&
         typeof v.exp === "number" &&
-        Number.isFinite(v.exp)
+        Number.isFinite(v.exp) &&
+        (v.occurrences === undefined ||
+            (Array.isArray(v.occurrences) && v.occurrences.every((d) => typeof d === "string")))
     );
 }
 

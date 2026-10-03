@@ -32,6 +32,7 @@ import {
     listBookingRequests,
     markBookingBooked,
     markBookingClicked,
+    markBookingSeriesBooked,
     openTokenPair,
     sealTokenPair,
     setBookingStatus,
@@ -56,6 +57,7 @@ import {
     ALLOWED_SLOT_DURATIONS,
     bookingWindowIso,
     computeSlots,
+    daysToCoverOccurrences,
     DEFAULT_SLOT_DAYS,
     DEFAULT_SLOT_DURATION_MIN,
     MAX_SLOT_BUFFER_MIN,
@@ -94,7 +96,15 @@ export interface MintRequest {
     dispatcherUtcOffset?: number;
     /** Buffer minutes around busy blocks (optional; 0 keeps back-to-back). */
     bufferMin?: number;
+    /**
+     * Series (recurring) request: one slot is picked per YYYY-MM-DD date.
+     * Absent for single-book requests. `dates` is accepted as an alias.
+     */
+    occurrences?: string[];
 }
+
+/** Upper bound for series occurrences per booking link. */
+export const MAX_SERIES_OCCURRENCES = 8;
 
 export type MintValidation =
     { ok: true; value: MintRequest } | { ok: false; error: string; details?: string[] };
@@ -170,6 +180,25 @@ export function validateMintRequest(body: unknown): MintValidation {
     ) {
         details.push(`bufferMin must be an integer between 0 and ${MAX_SLOT_BUFFER_MIN}`);
     }
+    // Series requests: `occurrences` preferred, `dates` accepted as an alias.
+    const rawOccurrences =
+        candidate.occurrences !== undefined ? candidate.occurrences : candidate.dates;
+    let occurrences: string[] | undefined;
+    if (rawOccurrences !== undefined) {
+        if (
+            !Array.isArray(rawOccurrences) ||
+            rawOccurrences.length === 0 ||
+            rawOccurrences.length > MAX_SERIES_OCCURRENCES ||
+            !rawOccurrences.every(isOccurrenceDate) ||
+            new Set(rawOccurrences).size !== rawOccurrences.length
+        ) {
+            details.push(
+                `occurrences must be an array of 1-${MAX_SERIES_OCCURRENCES} unique YYYY-MM-DD dates`,
+            );
+        } else {
+            occurrences = [...(rawOccurrences as string[])].sort();
+        }
+    }
     if (details.length > 0) {
         return { ok: false, error: "Invalid booking request", details };
     }
@@ -183,8 +212,20 @@ export function validateMintRequest(body: unknown): MintValidation {
             ...(hasTokenPair ? { haloTokenPair: candidate.haloTokenPair as HaloTokenPair } : {}),
             ...(typeof dispatcherUtcOffset === "number" ? { dispatcherUtcOffset } : {}),
             ...(typeof bufferMin === "number" ? { bufferMin } : {}),
+            ...(occurrences !== undefined ? { occurrences } : {}),
         },
     };
+}
+
+const OCCURRENCE_DATE_PATTERN = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+
+/** True for real calendar dates shaped YYYY-MM-DD (rejects 2026-02-30). */
+function isOccurrenceDate(value: unknown): value is string {
+    if (typeof value !== "string" || !OCCURRENCE_DATE_PATTERN.test(value)) {
+        return false;
+    }
+    const ms = Date.parse(`${value}T00:00:00.000Z`);
+    return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === value;
 }
 
 function json(status: number, body: unknown): Response {
@@ -263,6 +304,10 @@ function publicStatus(
         clickedAt: record.clickedAt ?? null,
         bookedAppointmentId: record.bookedAppointmentId ?? null,
         viewCount,
+        occurrences: record.occurrences ?? null,
+        bookedAppointmentIds:
+            record.bookedAppointmentIds ??
+            (record.bookedAppointmentId !== undefined ? [record.bookedAppointmentId] : null),
     };
 }
 
@@ -357,6 +402,9 @@ async function handleMint(request: Request, env: BookingEnv): Promise<Response> 
             ? { bufferMin: validation.value.bufferMin }
             : {}),
         ...(sessionId !== undefined ? { sessionId } : {}),
+        ...(validation.value.occurrences !== undefined
+            ? { occurrences: validation.value.occurrences }
+            : {}),
     });
     const token = await signBookingToken(
         {
@@ -365,6 +413,7 @@ async function handleMint(request: Request, env: BookingEnv): Promise<Response> 
             agentIds: record.agentIds,
             appointmentTypeId: record.appointmentTypeId,
             exp,
+            ...(record.occurrences !== undefined ? { occurrences: record.occurrences } : {}),
         },
         env.SECRET,
     );
@@ -772,6 +821,11 @@ async function resolvePublicBooking(
                 error: "already-booked",
                 rid,
                 appointmentId: record.bookedAppointmentId ?? null,
+                appointmentIds:
+                    record.bookedAppointmentIds ??
+                    (record.bookedAppointmentId !== undefined
+                        ? [record.bookedAppointmentId]
+                        : null),
             }),
         };
     }
@@ -865,7 +919,14 @@ async function handleSlots(
     await recordAuditEvent(env.BOOKING_REQUESTS, rid, "view");
 
     const nowMs = Date.now();
-    const window = bookingWindowIso(nowMs, utcOffsetMin, days);
+    // Series requests stretch the window to cover every occurrence date
+    // (capped at the same 30-day maximum as `days`).
+    const occurrences = context.record.occurrences;
+    const effectiveDays =
+        occurrences === undefined
+            ? days
+            : Math.min(daysToCoverOccurrences(nowMs, utcOffsetMin, occurrences, days), 30);
+    const window = bookingWindowIso(nowMs, utcOffsetMin, effectiveDays);
     let appointments: WorkerAppointment[];
     try {
         appointments = await withRefreshedHalo(env, rid, client, (accessToken) =>
@@ -896,12 +957,13 @@ async function handleSlots(
         busy: toBusyBlocks(appointments),
         nowMs,
         utcOffsetMin,
-        days,
+        days: effectiveDays,
         durationMin,
         businessOffsetMin: context.record.businessOffsetMin,
         schedules: toAgentSchedules(directory ?? []),
         bufferMin: context.record.bufferMin,
     });
+    const byDate = new Map(slots.map((day) => [day.date, day.slots] as const));
     return json(200, {
         rid,
         ticketId: context.record.ticketId,
@@ -912,6 +974,16 @@ async function handleSlots(
         days: slots,
         durationMin,
         utcOffset: utcOffsetMin,
+        // Series requests group the same grid per occurrence date so the
+        // picker can offer one slot choice per visit. Absent when single.
+        ...(occurrences !== undefined
+            ? {
+                  occurrences: occurrences.map((date) => ({
+                      date,
+                      slots: byDate.get(date) ?? [],
+                  })),
+              }
+            : {}),
     });
 }
 
@@ -921,6 +993,20 @@ interface BookBody {
     start?: unknown;
     end?: unknown;
     utcOffset?: unknown;
+    bookings?: unknown;
+}
+
+function parseUtcOffsetParam(value: unknown): number | null {
+    const utcOffsetMin = value === undefined ? 0 : value;
+    if (
+        typeof utcOffsetMin !== "number" ||
+        !Number.isInteger(utcOffsetMin) ||
+        utcOffsetMin < -840 ||
+        utcOffsetMin > 840
+    ) {
+        return null;
+    }
+    return utcOffsetMin;
 }
 
 function parseBookBody(
@@ -949,16 +1035,68 @@ function parseBookBody(
     if (!(ALLOWED_SLOT_DURATIONS as readonly number[]).includes(durationMin)) {
         return { ok: false, error: "invalid-slot" };
     }
-    const utcOffsetMin = candidate.utcOffset === undefined ? 0 : candidate.utcOffset;
-    if (
-        typeof utcOffsetMin !== "number" ||
-        !Number.isInteger(utcOffsetMin) ||
-        utcOffsetMin < -840 ||
-        utcOffsetMin > 840
-    ) {
+    const utcOffsetMin = parseUtcOffsetParam(candidate.utcOffset);
+    if (utcOffsetMin === null) {
         return { ok: false, error: "invalid-request" };
     }
     return { ok: true, value: { agentId: candidate.agentId, startMs, endMs, utcOffsetMin } };
+}
+
+interface SeriesBookingSelection {
+    agentId: number;
+    startMs: number;
+    endMs: number;
+    occurrence: string | null;
+}
+
+function parseSeriesBody(
+    body: unknown,
+):
+    | { ok: true; value: { bookings: SeriesBookingSelection[]; utcOffsetMin: number } }
+    | { ok: false; error: string } {
+    if (typeof body !== "object" || body === null) {
+        return { ok: false, error: "invalid-request" };
+    }
+    const candidate = body as BookBody;
+    if (
+        !Array.isArray(candidate.bookings) ||
+        candidate.bookings.length === 0 ||
+        candidate.bookings.length > MAX_SERIES_OCCURRENCES
+    ) {
+        return { ok: false, error: "invalid-request" };
+    }
+    const bookings: SeriesBookingSelection[] = [];
+    for (const item of candidate.bookings) {
+        if (typeof item !== "object" || item === null) {
+            return { ok: false, error: "invalid-request" };
+        }
+        const row = item as Record<string, unknown>;
+        if (typeof row.agentId !== "number" || !Number.isInteger(row.agentId)) {
+            return { ok: false, error: "invalid-request" };
+        }
+        if (typeof row.start !== "string" || typeof row.end !== "string") {
+            return { ok: false, error: "invalid-request" };
+        }
+        const startMs = Date.parse(row.start);
+        const endMs = Date.parse(row.end);
+        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+            return { ok: false, error: "invalid-request" };
+        }
+        if (row.occurrence !== undefined && typeof row.occurrence !== "string") {
+            return { ok: false, error: "invalid-request" };
+        }
+        bookings.push({
+            agentId: row.agentId,
+            startMs,
+            endMs,
+            occurrence: typeof row.occurrence === "string" ? row.occurrence : null,
+        });
+    }
+    const utcOffsetMin = parseUtcOffsetParam(candidate.utcOffset);
+    if (utcOffsetMin === null) {
+        return { ok: false, error: "invalid-request" };
+    }
+    return { ok: true, value: { bookings, utcOffsetMin } };
 }
 
 interface TicketContext {
@@ -984,6 +1122,39 @@ function toTicketContext(body: unknown, ticketId: number): TicketContext {
     };
 }
 
+/**
+ * Appointment payload mirrors the dispatcher flow (TriageDispatchModal):
+ * same event/status/location defaults, ticket-linked. NOTE: no ticket
+ * note/action write — the repo's CreateTicketPayload documents no
+ * action/note field, so booking creates the appointment only (fallback).
+ */
+function buildAppointmentPayload(
+    record: BookingRequestRecord,
+    ticket: TicketContext,
+    agentId: number,
+    startMs: number,
+    endMs: number,
+): Record<string, unknown> {
+    return {
+        start_date: new Date(startMs).toISOString(),
+        end_date: new Date(endMs).toISOString(),
+        event_type: "a",
+        appointment_type_id: record.appointmentTypeId,
+        reminderminutes: 15,
+        agent_status: 1,
+        open_appointment_status: 0,
+        appointment_location: 0,
+        subject: ticket.summary,
+        ticket_id: record.ticketId,
+        note_html: "<p>Customer self-booking via dispatch portal.</p>",
+        agent_id: agentId,
+        attendees: "",
+        client_id: ticket.clientId,
+        site_id: ticket.siteId,
+        user_id: ticket.userId,
+    };
+}
+
 async function handleBook(
     request: Request,
     env: BookingEnv,
@@ -1005,6 +1176,16 @@ async function handleBook(
     );
     if (!context.ok) {
         return context.response;
+    }
+    // Series redeem: a `bookings` array confirms N appointments best-effort
+    // with per-occurrence results. Its presence selects the series path.
+    if (typeof body === "object" && body !== null && (body as BookBody).bookings !== undefined) {
+        return handleSeriesBook(env, rid, context.record, body);
+    }
+    // Series links redeem as a series only: a single-slot body would burn the
+    // link while silently dropping the other occurrences.
+    if (context.record.occurrences !== undefined) {
+        return json(400, { error: "invalid-request", rid });
     }
     const parsed = parseBookBody(body);
     if (!parsed.ok) {
@@ -1068,31 +1249,19 @@ async function handleBook(
         return json(502, { error: "halo-unavailable" });
     }
 
-    // Appointment payload mirrors the dispatcher flow (TriageDispatchModal):
-    // same event/status/location defaults, ticket-linked. NOTE: no ticket
-    // note/action write — the repo's CreateTicketPayload documents no
-    // action/note field, so slice 2 books the appointment only (fallback).
     let appointmentId: number;
     try {
         appointmentId = await withRefreshedHalo(env, rid, client, (accessToken) =>
-            client.createAppointment(accessToken, {
-                start_date: new Date(parsed.value.startMs).toISOString(),
-                end_date: new Date(parsed.value.endMs).toISOString(),
-                event_type: "a",
-                appointment_type_id: context.record.appointmentTypeId,
-                reminderminutes: 15,
-                agent_status: 1,
-                open_appointment_status: 0,
-                appointment_location: 0,
-                subject: ticket.summary,
-                ticket_id: context.record.ticketId,
-                note_html: "<p>Customer self-booking via dispatch portal.</p>",
-                agent_id: parsed.value.agentId,
-                attendees: "",
-                client_id: ticket.clientId,
-                site_id: ticket.siteId,
-                user_id: ticket.userId,
-            }),
+            client.createAppointment(
+                accessToken,
+                buildAppointmentPayload(
+                    context.record,
+                    ticket,
+                    parsed.value.agentId,
+                    parsed.value.startMs,
+                    parsed.value.endMs,
+                ),
+            ),
         );
     } catch {
         return json(502, { error: "halo-unavailable" });
@@ -1121,6 +1290,228 @@ async function handleBook(
         start: new Date(parsed.value.startMs).toISOString(),
         end: new Date(parsed.value.endMs).toISOString(),
     });
+}
+
+type SeriesItemError = "invalid-slot" | "slot-taken" | "halo-unavailable";
+
+interface SeriesItemResult {
+    index: number;
+    occurrence: string | null;
+    ok: boolean;
+    appointmentId: number | null;
+    error: SeriesItemError | null;
+    agentId: number;
+    start: string;
+    end: string;
+}
+
+function seriesFailure(
+    index: number,
+    selection: SeriesBookingSelection,
+    error: SeriesItemError,
+): SeriesItemResult {
+    return {
+        index,
+        occurrence: selection.occurrence,
+        ok: false,
+        appointmentId: null,
+        error,
+        agentId: selection.agentId,
+        start: new Date(selection.startMs).toISOString(),
+        end: new Date(selection.endMs).toISOString(),
+    };
+}
+
+/**
+ * Series redeem: confirm N appointments best-effort. Every selection gets a
+ * per-occurrence result; one taken slot never blocks the rest. All-ok answers
+ * 201, partial success 207, total failure keeps the record pending and
+ * answers 409 (any taken) / 502 (Halo down) / 400 (invalid).
+ */
+async function handleSeriesBook(
+    env: BookingEnv,
+    rid: string,
+    record: BookingRequestRecord,
+    body: unknown,
+): Promise<Response> {
+    const parsed = parseSeriesBody(body);
+    if (!parsed.ok) {
+        return json(400, { error: parsed.error });
+    }
+    const client = haloClient(env);
+    if (!client) {
+        return json(503, { error: "booking-unavailable" });
+    }
+    const { bookings, utcOffsetMin } = parsed.value;
+    const results: (SeriesItemResult | null)[] = new Array(bookings.length).fill(null);
+    const fail = (index: number, error: SeriesItemError): void => {
+        results[index] = seriesFailure(index, bookings[index], error);
+    };
+
+    // Semantic pre-check (no Halo calls): membership + offered durations.
+    const candidates: number[] = [];
+    bookings.forEach((selection, index) => {
+        const durationMin = Math.round((selection.endMs - selection.startMs) / 60_000);
+        if (
+            !record.agentIds.includes(selection.agentId) ||
+            !(ALLOWED_SLOT_DURATIONS as readonly number[]).includes(durationMin)
+        ) {
+            fail(index, "invalid-slot");
+        } else {
+            candidates.push(index);
+        }
+    });
+    if (candidates.length === 0) {
+        return json(400, {
+            error: "invalid-slot",
+            rid,
+            results: results as SeriesItemResult[],
+        });
+    }
+
+    // Re-check survivors against live appointments over one covering window.
+    const nowMs = Date.now();
+    const starts = candidates.map((i) => bookings[i].startMs);
+    const ends = candidates.map((i) => bookings[i].endMs);
+    let busy: SlotBusyBlock[];
+    try {
+        const appointments = await withRefreshedHalo(env, rid, client, (accessToken) =>
+            client.getAppointments(accessToken, {
+                startDate: new Date(Math.min(...starts) - 24 * 60 * 60 * 1000).toISOString(),
+                endDate: new Date(Math.max(...ends) + 24 * 60 * 60 * 1000).toISOString(),
+                agentIds: record.agentIds,
+            }),
+        );
+        busy = toBusyBlocks(appointments);
+    } catch {
+        for (const index of candidates) {
+            fail(index, "halo-unavailable");
+        }
+        return json(502, {
+            error: "halo-unavailable",
+            rid,
+            results: results as SeriesItemResult[],
+        });
+    }
+    // Within-batch blocks: an accepted selection occupies its agent, so a
+    // duplicate pick later in the same request reports slot-taken.
+    const batchBusy: SlotBusyBlock[] = [];
+    const valid: number[] = [];
+    for (const index of candidates) {
+        const selection = bookings[index];
+        const check = validateSlot({
+            busy: [...busy, ...batchBusy],
+            nowMs,
+            utcOffsetMin,
+            agentId: selection.agentId,
+            startMs: selection.startMs,
+            endMs: selection.endMs,
+            businessOffsetMin: record.businessOffsetMin,
+        });
+        if (!check.ok) {
+            fail(index, check.reason === "taken" ? "slot-taken" : "invalid-slot");
+        } else {
+            valid.push(index);
+            batchBusy.push({
+                agentId: selection.agentId,
+                startMs: selection.startMs,
+                endMs: selection.endMs,
+                allDay: false,
+            });
+        }
+    }
+    if (valid.length === 0) {
+        const errors = (results as SeriesItemResult[]).map((r) => r.error);
+        const topError: SeriesItemError = errors.includes("slot-taken")
+            ? "slot-taken"
+            : "invalid-slot";
+        return json(topError === "slot-taken" ? 409 : 400, {
+            error: topError,
+            rid,
+            results: results as SeriesItemResult[],
+        });
+    }
+
+    let ticket: TicketContext;
+    try {
+        const ticketBody = await withRefreshedHalo(env, rid, client, (accessToken) =>
+            client.getTicket(accessToken, record.ticketId),
+        );
+        ticket = toTicketContext(ticketBody, record.ticketId);
+    } catch {
+        for (const index of valid) {
+            fail(index, "halo-unavailable");
+        }
+        return json(502, {
+            error: "halo-unavailable",
+            rid,
+            results: results as SeriesItemResult[],
+        });
+    }
+
+    const appointmentIds: number[] = [];
+    for (const index of valid) {
+        const selection = bookings[index];
+        try {
+            const appointmentId = await withRefreshedHalo(env, rid, client, (accessToken) =>
+                client.createAppointment(
+                    accessToken,
+                    buildAppointmentPayload(
+                        record,
+                        ticket,
+                        selection.agentId,
+                        selection.startMs,
+                        selection.endMs,
+                    ),
+                ),
+            );
+            appointmentIds.push(appointmentId);
+            results[index] = {
+                index,
+                occurrence: selection.occurrence,
+                ok: true,
+                appointmentId,
+                error: null,
+                agentId: selection.agentId,
+                start: new Date(selection.startMs).toISOString(),
+                end: new Date(selection.endMs).toISOString(),
+            };
+        } catch {
+            fail(index, "halo-unavailable");
+        }
+    }
+
+    if (appointmentIds.length === 0) {
+        return json(502, {
+            error: "halo-unavailable",
+            rid,
+            results: results as SeriesItemResult[],
+        });
+    }
+    try {
+        await markBookingSeriesBooked(env.BOOKING_REQUESTS, rid, appointmentIds);
+    } catch (error) {
+        // Lost a concurrent redeem race: appointments exist, but the record
+        // already flipped. Answer replay semantics, no duplicates.
+        if (error instanceof BookingStateError && error.code === "illegal-transition") {
+            const current = await getBookingRequest(env.BOOKING_REQUESTS, rid);
+            return json(409, {
+                error: "already-booked",
+                rid,
+                appointmentId: current?.bookedAppointmentId ?? null,
+                appointmentIds:
+                    current?.bookedAppointmentIds ??
+                    (current?.bookedAppointmentId !== undefined &&
+                    current?.bookedAppointmentId !== null
+                        ? [current.bookedAppointmentId]
+                        : null),
+            });
+        }
+        throw error;
+    }
+    const ordered = results as SeriesItemResult[];
+    const partial = ordered.some((r) => !r.ok);
+    return json(partial ? 207 : 201, { rid, appointmentIds, results: ordered });
 }
 
 export default {

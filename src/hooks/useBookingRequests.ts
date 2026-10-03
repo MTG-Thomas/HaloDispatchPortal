@@ -159,6 +159,7 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
                     clickedAt: null,
                     bookedAppointmentId: null,
                     viewCount: 0,
+                    ...(previous.occurrences ? { occurrences: previous.occurrences } : {}),
                 };
                 if (mountedRef.current) {
                     setRequests((rows) => [

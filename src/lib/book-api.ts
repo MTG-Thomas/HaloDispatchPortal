@@ -38,6 +38,8 @@ export class BookApiError extends Error {
     readonly status: number | null;
     /** Halo appointment id, present on `already-booked` replays. */
     readonly appointmentId: number | null;
+    /** Per-occurrence results, present on failed series confirms. */
+    readonly seriesResults: BookSeriesResult[] | null;
 
     constructor(code: BookErrorCode, message: string, status: number | null = null) {
         super(message);
@@ -45,11 +47,20 @@ export class BookApiError extends Error {
         this.code = code;
         this.status = status;
         this.appointmentId = null;
+        this.seriesResults = null;
     }
 
     withAppointmentId(appointmentId: number | null): BookApiError {
         const copy = new BookApiError(this.code, this.message, this.status);
         (copy as { appointmentId: number | null }).appointmentId = appointmentId;
+        (copy as { seriesResults: BookSeriesResult[] | null }).seriesResults = this.seriesResults;
+        return copy;
+    }
+
+    withSeriesResults(seriesResults: BookSeriesResult[] | null): BookApiError {
+        const copy = new BookApiError(this.code, this.message, this.status);
+        (copy as { appointmentId: number | null }).appointmentId = this.appointmentId;
+        (copy as { seriesResults: BookSeriesResult[] | null }).seriesResults = seriesResults;
         return copy;
     }
 }
@@ -104,6 +115,13 @@ export interface BookDaySlots {
     slots: BookSlotOption[];
 }
 
+/** Per-occurrence options for a series (recurring) request. */
+export interface BookOccurrenceSlots {
+    /** Requested occurrence date (YYYY-MM-DD); slots may be empty. */
+    date: string;
+    slots: BookSlotOption[];
+}
+
 export interface BookSlotsResponse {
     rid: string;
     ticketId: number;
@@ -115,6 +133,8 @@ export interface BookSlotsResponse {
     days: BookDaySlots[];
     durationMin: number;
     utcOffset: number;
+    /** Present only for series requests: one entry per occurrence date. */
+    occurrences?: BookOccurrenceSlots[];
 }
 
 export interface BookConfirmResponse {
@@ -123,6 +143,37 @@ export interface BookConfirmResponse {
     agentId: number;
     start: string;
     end: string;
+}
+
+/** One slot choice within a series confirm. */
+export interface BookSeriesSelection {
+    agentId: number;
+    /** ISO UTC instants. */
+    start: string;
+    end: string;
+    /** Occurrence date (YYYY-MM-DD) this choice answers, when known. */
+    occurrence?: string;
+}
+
+export type BookSeriesItemError = "invalid-slot" | "slot-taken" | "halo-unavailable";
+
+/** Per-occurrence outcome of a series confirm (best-effort). */
+export interface BookSeriesResult {
+    index: number;
+    occurrence: string | null;
+    ok: boolean;
+    appointmentId: number | null;
+    error: BookSeriesItemError | null;
+    agentId: number;
+    start: string;
+    end: string;
+}
+
+/** Series confirm envelope: 201 all-ok, 207 partial success. */
+export interface BookSeriesConfirmResponse {
+    rid: string;
+    appointmentIds: number[];
+    results: BookSeriesResult[];
 }
 
 export interface FetchBookSlotsArgs {
@@ -191,9 +242,48 @@ async function throwForResponse(response: Response): Promise<never> {
     }
     const code = codeForStatus(response.status, body.error);
     const error = new BookApiError(code, messageForCode(code), response.status);
-    throw typeof body.appointmentId === "number"
-        ? error.withAppointmentId(body.appointmentId)
-        : error;
+    const withId =
+        typeof body.appointmentId === "number"
+            ? error.withAppointmentId(body.appointmentId)
+            : error;
+    const seriesResults = parseSeriesResults(body.results);
+    throw seriesResults ? withId.withSeriesResults(seriesResults) : withId;
+}
+
+/** Lenient per-occurrence results: null unless every row is shaped. */
+function parseSeriesResults(value: unknown): BookSeriesResult[] | null {
+    if (!Array.isArray(value)) {
+        return null;
+    }
+    const rows: BookSeriesResult[] = [];
+    for (const item of value) {
+        if (!isRecord(item)) {
+            return null;
+        }
+        if (
+            typeof item.index !== "number" ||
+            (item.occurrence !== null && typeof item.occurrence !== "string") ||
+            typeof item.ok !== "boolean" ||
+            (item.appointmentId !== null && typeof item.appointmentId !== "number") ||
+            (item.error !== null && typeof item.error !== "string") ||
+            typeof item.agentId !== "number" ||
+            typeof item.start !== "string" ||
+            typeof item.end !== "string"
+        ) {
+            return null;
+        }
+        rows.push({
+            index: item.index,
+            occurrence: item.occurrence,
+            ok: item.ok,
+            appointmentId: item.appointmentId,
+            error: item.error as BookSeriesItemError | null,
+            agentId: item.agentId,
+            start: item.start,
+            end: item.end,
+        });
+    }
+    return rows;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -274,6 +364,10 @@ export interface BookingRequestSummary {
     bookedAppointmentId: number | null;
     /** Validated customer views, counted from the KV audit trail. */
     viewCount: number;
+    /** Series occurrence dates; absent/null for single-book requests. */
+    occurrences?: string[] | null;
+    /** All Halo appointment ids from a series redeem, in booking order. */
+    bookedAppointmentIds?: number[] | null;
 }
 
 /**
@@ -368,6 +462,20 @@ function parseBookingSummary(body: unknown): BookingRequestSummary | null {
     }
     // Lenient viewCount: older Workers omit it; non-numeric reads as 0.
     const viewCount = body.viewCount;
+    // Series extras are lenient: malformed extras drop, the row survives.
+    const occurrences = body.occurrences ?? null;
+    const bookedAppointmentIds = body.bookedAppointmentIds ?? null;
+    const cleanOccurrences =
+        occurrences === null ||
+        (Array.isArray(occurrences) && occurrences.every((d): d is string => typeof d === "string"))
+            ? (occurrences as string[] | null)
+            : null;
+    const cleanAppointmentIds =
+        bookedAppointmentIds === null ||
+        (Array.isArray(bookedAppointmentIds) &&
+            bookedAppointmentIds.every((id): id is number => typeof id === "number"))
+            ? (bookedAppointmentIds as number[] | null)
+            : null;
     return {
         rid: body.rid,
         status: body.status as BookingRequestStatus,
@@ -383,6 +491,9 @@ function parseBookingSummary(body: unknown): BookingRequestSummary | null {
             typeof viewCount === "number" && Number.isFinite(viewCount)
                 ? Math.max(0, Math.floor(viewCount))
                 : 0,
+        // Null extras stay absent so old rows compare equal to new parses.
+        ...(cleanOccurrences !== null ? { occurrences: cleanOccurrences } : {}),
+        ...(cleanAppointmentIds !== null ? { bookedAppointmentIds: cleanAppointmentIds } : {}),
     };
 }
 
@@ -657,6 +768,8 @@ export interface MintBookingArgs {
      * customer offset cannot book off-hours appointments.
      */
     dispatcherUtcOffset?: number;
+    /** Series request: one slot is picked per YYYY-MM-DD date. */
+    occurrences?: string[];
     signal?: AbortSignal;
 }
 
@@ -681,6 +794,7 @@ export async function mintBookingRequest(args: MintBookingArgs): Promise<MintBoo
                 appointmentTypeId: args.appointmentTypeId,
                 sessionId: args.sessionId,
                 dispatcherUtcOffset,
+                ...(args.occurrences !== undefined ? { occurrences: args.occurrences } : {}),
             }),
             signal: args.signal,
         });
@@ -736,6 +850,7 @@ export async function resendBookingRequest(args: ResendBookingArgs): Promise<Res
         appointmentTypeId: args.previous.appointmentTypeId,
         sessionId: args.sessionId,
         dispatcherUtcOffset: args.dispatcherUtcOffset,
+        ...(args.previous.occurrences ? { occurrences: args.previous.occurrences } : {}),
         signal: args.signal,
     });
     if (args.previous.status !== "pending") {
@@ -750,6 +865,66 @@ export async function resendBookingRequest(args: ResendBookingArgs): Promise<Res
         }
         return { ...fresh, oldInvalidated: false };
     }
+}
+
+export interface ConfirmBookingSeriesArgs {
+    token: string;
+    bookings: BookSeriesSelection[];
+    utcOffset?: number;
+    signal?: AbortSignal;
+}
+
+function parseSeriesConfirmResponse(body: unknown): BookSeriesConfirmResponse {
+    if (
+        !isRecord(body) ||
+        typeof body.rid !== "string" ||
+        !Array.isArray(body.appointmentIds) ||
+        !body.appointmentIds.every((id): id is number => typeof id === "number")
+    ) {
+        throw new BookApiError(
+            "network-error",
+            "The booking service returned an invalid response.",
+        );
+    }
+    const results = parseSeriesResults(body.results);
+    if (!results) {
+        throw new BookApiError(
+            "network-error",
+            "The booking service returned an invalid response.",
+        );
+    }
+    return { rid: body.rid, appointmentIds: body.appointmentIds, results };
+}
+
+/**
+ * Redeem a booking link for N slots (series). Best-effort: partial success
+ * resolves with per-occurrence results (HTTP 207); total failure throws a
+ * `BookApiError` carrying `seriesResults` for per-occurrence reporting.
+ */
+export async function confirmBookingSeries(
+    args: ConfirmBookingSeriesArgs,
+): Promise<BookSeriesConfirmResponse> {
+    const rid = decodeBookingTokenRid(args.token);
+    let response: Response;
+    try {
+        response = await fetch(`${BOOK_API_BASE}/requests/${encodeURIComponent(rid)}/book`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                token: args.token,
+                bookings: args.bookings,
+                utcOffset: args.utcOffset ?? 0,
+            }),
+            signal: args.signal,
+        });
+    } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") throw error;
+        throw new BookApiError("network-error", messageForCode("network-error"));
+    }
+    if (!response.ok) {
+        await throwForResponse(response);
+    }
+    return parseSeriesConfirmResponse((await response.json()) as unknown);
 }
 
 /** Redeem a booking link for one slot (single-use). */
