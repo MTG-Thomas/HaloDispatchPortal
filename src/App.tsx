@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, type ComponentType } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { AuthProvider } from "./contexts/AuthContext";
@@ -17,6 +17,15 @@ const Book = lazy(() => import("./pages/Book"));
 const DispatchView = lazy(() =>
     import("./components/DispatchView").then((module) => ({ default: module.DispatchView })),
 );
+// Dev-only WebMCP invoker: the dynamic import sits behind a statically-false
+// branch in production builds, so the panel never ships to customers.
+const WebMcpPanel = lazy<ComponentType>(async () => {
+    if (!import.meta.env.DEV) {
+        return { default: () => null };
+    }
+    const module = await import("./components/dev/WebMcpPanel");
+    return { default: module.WebMcpPanel };
+});
 
 function App() {
     return (
@@ -49,6 +58,11 @@ function App() {
 
                         {/* Toast notifications */}
                         <Toaster />
+
+                        {/* Dev-only WebMCP invoker; compiled out of production. */}
+                        <Suspense fallback={null}>
+                            {import.meta.env.DEV && <WebMcpPanel />}
+                        </Suspense>
                     </DragProvider>
                 </AuthProvider>
             </ThemeProvider>
