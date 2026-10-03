@@ -8,6 +8,17 @@
         href="/logo.svg" />
     <meta name="viewport"
         content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer"
+        content="strict-origin-when-cross-origin" />
+    <meta name="description"
+        content="Halo Dispatch Portal - schedule and manage service appointments with your HaloPSA team." />
+    <!-- Content Security Policy. Note: frame-ancestors is intentionally set
+         via the X-Frame-Options response header (vercel.json) instead, since
+         that directive is ignored in meta tags. ws:/wss: cover Vite dev HMR;
+         the meta tag is stripped from dev responses (see vite.config.ts) so
+         the React preamble keeps working, and applies to built output. -->
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: ws: wss:; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests" />
     <title>Halo Dispatch Portal</title>
 </head>
 

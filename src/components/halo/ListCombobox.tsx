@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Check, ChevronsUpDown } from 'lucide-react';
 import { useDispatchStore } from '@/stores/useDispatchStore';
 import { Button } from '@/components/ui/button';
@@ -55,33 +55,8 @@ export function ListCombobox() {
   // Sort groups by sequence and convert to array
   const groups = Object.values(groupedLists).sort((a, b) => a.sequence - b.sequence);
 
-  // Restore selected lists from localStorage on mount
-  useEffect(() => {
-    if (viewLists.length > 0 && selectedListIds.length === 0) {
-      const saved = localStorage.getItem('halo-selected-lists');
-      if (saved) {
-        try {
-          const listIds: number[] = JSON.parse(saved);
-          // Validate that saved list IDs still exist
-          const validIds = listIds.filter((id) =>
-            viewLists.some((list) => list.id === id)
-          );
-          if (validIds.length > 0) {
-            validIds.forEach((id) => toggleListSelection(id));
-          }
-        } catch (error) {
-          console.error('Failed to parse saved list selection:', error);
-        }
-      }
-    }
-  }, [viewLists, selectedListIds.length, toggleListSelection]);
-
-  // Save selected lists to localStorage whenever they change
-  useEffect(() => {
-    if (selectedListIds.length > 0) {
-      localStorage.setItem('halo-selected-lists', JSON.stringify(selectedListIds));
-    }
-  }, [selectedListIds]);
+  // Selection is persisted by the dispatch store; DispatchView validates the
+  // persisted ids against loaded view lists. This combobox only mutates.
 
   const handleListToggle = (listId: number) => {
     toggleListSelection(listId);

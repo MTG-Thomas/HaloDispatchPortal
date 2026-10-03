@@ -1,30 +1,45 @@
-import { get, post } from '@/lib/api-client';
+import { get, post, type RequestOptions } from "@/lib/api-client";
+import {
+    parseHaloResponse,
+    ClientCacheSchema,
+    ViewListArraySchema,
+    ViewFilterArraySchema,
+    TicketsResponseSchema,
+    HaloAppointmentArraySchema,
+    HaloAppointmentTypeArraySchema,
+    SearchUsersResponseSchema,
+    HaloCategoryArraySchema,
+    HaloTeamArraySchema,
+    HaloAgentArraySchema,
+    GetSitesResponseSchema,
+    TicketArraySchema,
+} from "@/lib/halo-schemas";
 import type {
-  ClientCache,
-  ViewList,
-  ViewFilter,
-  TicketsResponse,
-  GetClientCacheParams,
-  GetViewListsParams,
-  GetViewFilterParams,
-  GetTicketsParams,
-  HaloAppointment,
-  HaloAppointmentType,
-  GetAppointmentsParams,
-  GetLookupParams,
-  SearchUsersParams,
-  SearchUsersResponse,
-  GetCategoriesParams,
-  HaloCategory,
-  GetTeamsParams,
-  HaloTeam,
-  GetAgentsParams,
-  HaloAgent,
-  GetSitesParams,
-  GetSitesResponse,
-  CreateTicketPayload,
-  Ticket,
-} from '@/types/halo';
+    ClientCache,
+    ViewList,
+    ViewFilter,
+    TicketsResponse,
+    GetClientCacheParams,
+    GetViewListsParams,
+    GetViewFilterParams,
+    GetTicketsParams,
+    HaloAppointment,
+    HaloAppointmentType,
+    GetAppointmentsParams,
+    GetLookupParams,
+    SearchUsersParams,
+    SearchUsersResponse,
+    GetCategoriesParams,
+    HaloCategory,
+    GetTeamsParams,
+    HaloTeam,
+    GetAgentsParams,
+    HaloAgent,
+    GetSitesParams,
+    GetSitesResponse,
+    CreateTicketPayload,
+    Ticket,
+} from "@/types/halo";
 
 /**
  * Halo PSA API Service
@@ -41,10 +56,11 @@ import type {
  * @returns ClientCache with agents, ticket areas, statuses, ticket types, etc.
  */
 export async function getClientCache(
-  params: GetClientCacheParams = { iscachebuild: true }
+    params: GetClientCacheParams = { iscachebuild: true },
+    options?: RequestOptions,
 ): Promise<ClientCache> {
-  const response = await get<ClientCache>('/api/ClientCache', params);
-  return response;
+    const response = await get<unknown>("/api/ClientCache", params, options);
+    return parseHaloResponse<ClientCache>(ClientCacheSchema, response, "ClientCache");
 }
 
 /**
@@ -56,18 +72,20 @@ export async function getClientCache(
  * @returns Array of ViewList objects with groups
  */
 export async function getViewLists(
-  ticketAreaId: number,
-  utcOffset: number = 0
+    ticketAreaId: number,
+    utcOffset: number = 0,
+    options?: RequestOptions,
 ): Promise<ViewList[]> {
-  const params: GetViewListsParams = {
-    showcounts: true,
-    domain: 'reqs',
-    type: 'reqs',
-    ticketarea_id: ticketAreaId,
-    utcoffset: utcOffset,
-  };
+    const params: GetViewListsParams = {
+        showcounts: true,
+        domain: "reqs",
+        type: "reqs",
+        ticketarea_id: ticketAreaId,
+        utcoffset: utcOffset,
+    };
 
-  return get<ViewList[]>('/api/viewlists', params);
+    const response = await get<unknown>("/api/viewlists", params, options);
+    return parseHaloResponse<ViewList[]>(ViewListArraySchema, response, "ViewLists");
 }
 
 /**
@@ -78,14 +96,16 @@ export async function getViewLists(
  * @returns Array of ViewFilter objects
  */
 export async function getViewFilter(
-  ticketAreaId: number
+    ticketAreaId: number,
+    options?: RequestOptions,
 ): Promise<ViewFilter[]> {
-  const params: GetViewFilterParams = {
-    type: 'reqs',
-    ticketarea_id: ticketAreaId,
-  };
+    const params: GetViewFilterParams = {
+        type: "reqs",
+        ticketarea_id: ticketAreaId,
+    };
 
-  return get<ViewFilter[]>('/api/ViewFilter', params);
+    const response = await get<unknown>("/api/ViewFilter", params, options);
+    return parseHaloResponse<ViewFilter[]>(ViewFilterArraySchema, response, "ViewFilter");
 }
 
 /**
@@ -100,35 +120,37 @@ export async function getViewFilter(
  * @returns TicketsResponse with tickets array and pagination metadata
  */
 export async function getTickets(
-  listId: number,
-  ticketAreaId: number,
-  pageNo: number = 1,
-  pageSize: number = 100,
-  columnsId?: number,
-  utcOffset: number = 0
+    listId: number,
+    ticketAreaId: number,
+    pageNo: number = 1,
+    pageSize: number = 100,
+    columnsId?: number,
+    utcOffset: number = 0,
+    options?: RequestOptions,
 ): Promise<TicketsResponse> {
-  const params: GetTicketsParams = {
-    pageinate: true,
-    page_size: pageSize,
-    page_no: pageNo,
-    ticketarea_id: ticketAreaId,
-    list_id: listId,
-    utcoffset: utcOffset,
-    includelastnote: true,
-    includehoversummary: true,
-    includechildread: true,
-    fetchgrandchildren: false,
-    cf_display_values_only: true,
-    view_id: 0,
-  };
+    const params: GetTicketsParams = {
+        pageinate: true,
+        page_size: pageSize,
+        page_no: pageNo,
+        ticketarea_id: ticketAreaId,
+        list_id: listId,
+        utcoffset: utcOffset,
+        includelastnote: true,
+        includehoversummary: true,
+        includechildread: true,
+        fetchgrandchildren: false,
+        cf_display_values_only: true,
+        view_id: 0,
+    };
 
-  // Add columns_id if provided
-  if (columnsId !== undefined) {
-    params.columns_id = columnsId;
-    params.includecolumns = true;
-  }
+    // Add columns_id if provided
+    if (columnsId !== undefined) {
+        params.columns_id = columnsId;
+        params.includecolumns = true;
+    }
 
-  return get<TicketsResponse>('/api/Tickets', params);
+    const response = await get<unknown>("/api/Tickets", params, options);
+    return parseHaloResponse<TicketsResponse>(TicketsResponseSchema, response, "Tickets");
 }
 
 /**
@@ -138,36 +160,33 @@ export async function getTickets(
  * @returns UTC offset in minutes (e.g., -300 for UTC-5)
  */
 export function getUtcOffset(): number {
-  const offsetMinutes = new Date().getTimezoneOffset();
-  // getTimezoneOffset returns positive values for locations west of UTC
-  // We need to negate it to match the API's expected format
-  return -offsetMinutes;
+    const offsetMinutes = new Date().getTimezoneOffset();
+    // getTimezoneOffset returns positive values for locations west of UTC
+    // We need to negate it to match the API's expected format
+    return -offsetMinutes;
 }
 
 /**
  * Build agent photo URL from agent photo path
  *
- * @param resourceServer - The resource server URL (e.g., "https://gocovi.halopsa.com")
+ * @param resourceServer - The resource server URL (e.g., "https://example.halopsa.com")
  * @param agentPhotoPath - The agent photo path from the API (e.g., "/AgentImage/...")
  * @returns Full photo URL or null if agentPhotoPath is not provided
  */
-export function getAgentPhotoUrl(
-  resourceServer: string,
-  agentPhotoPath?: string
-): string | null {
-  if (!agentPhotoPath) {
-    return null;
-  }
+export function getAgentPhotoUrl(resourceServer: string, agentPhotoPath?: string): string | null {
+    if (!agentPhotoPath) {
+        return null;
+    }
 
-  // Remove trailing slash from resource server if present
-  const baseUrl = resourceServer.replace(/\/$/, '');
+    // Remove trailing slash from resource server if present
+    const baseUrl = resourceServer.replace(/\/$/, "");
 
-  // Ensure agentPhotoPath starts with /api
-  if (agentPhotoPath.startsWith('/api')) {
-    return `${baseUrl}${agentPhotoPath}`;
-  }
+    // Ensure agentPhotoPath starts with /api
+    if (agentPhotoPath.startsWith("/api")) {
+        return `${baseUrl}${agentPhotoPath}`;
+    }
 
-  return `${baseUrl}/api${agentPhotoPath}`;
+    return `${baseUrl}/api${agentPhotoPath}`;
 }
 
 /**
@@ -178,15 +197,18 @@ export function getAgentPhotoUrl(
  * @returns Array of lookup items (type depends on lookupId)
  */
 export async function getLookup<T = unknown>(
-  lookupId: number,
-  unameaprestriction: boolean = true
+    lookupId: number,
+    unameaprestriction: boolean = true,
+    options?: RequestOptions,
 ): Promise<T[]> {
-  const params: GetLookupParams = {
-    lookupid: lookupId,
-    unameaprestriction,
-  };
+    const params: GetLookupParams = {
+        lookupid: lookupId,
+        unameaprestriction,
+    };
 
-  return get<T[]>('/api/lookup', params);
+    // Generic lookup: no single schema fits all lookup tables, so typed
+    // callers validate their own shape (see getAppointmentTypes).
+    return get<T[]>("/api/lookup", params, options);
 }
 
 /**
@@ -195,8 +217,15 @@ export async function getLookup<T = unknown>(
  *
  * @returns Array of HaloAppointmentType objects with colors and settings
  */
-export async function getAppointmentTypes(): Promise<HaloAppointmentType[]> {
-  return getLookup<HaloAppointmentType>(63, true);
+export async function getAppointmentTypes(
+    options?: RequestOptions,
+): Promise<HaloAppointmentType[]> {
+    const response = await getLookup<unknown>(63, true, options);
+    return parseHaloResponse<HaloAppointmentType[]>(
+        HaloAppointmentTypeArraySchema,
+        response,
+        "AppointmentTypes",
+    );
 }
 
 /**
@@ -209,36 +238,42 @@ export async function getAppointmentTypes(): Promise<HaloAppointmentType[]> {
  * @returns Array of HaloAppointment objects
  */
 export async function getAppointments(
-  startDate: string,
-  endDate: string,
-  agentIds?: number[],
-  utcOffset?: number
+    startDate: string,
+    endDate: string,
+    agentIds?: number[],
+    utcOffset?: number,
+    options?: RequestOptions,
 ): Promise<HaloAppointment[]> {
-  const offset = utcOffset ?? getUtcOffset();
-  const agentIdsStr = agentIds?.join(',') || '';
+    const offset = utcOffset ?? getUtcOffset();
+    const agentIdsStr = agentIds?.join(",") || "";
 
-  const params: GetAppointmentsParams = {
-    selectedAgents: agentIdsStr,
-    selectedStatuses: '0,1',
-    alllocations: true,
-    showholidays: true,
-    showappointments: true,
-    showchanges: true,
-    workhoursonly: true,
-    showprojects: true,
-    isrecurringmaster: false,
-    showtasks: false,
-    showscheduledtickets: true,
-    utcoffset: offset,
-    start_date: startDate,
-    end_date: endDate,
-    agents: agentIdsStr,
-    appointmentsonly: true,
-    excluderecurringmaster: true,
-    showshifts: false,
-  };
+    const params: GetAppointmentsParams = {
+        selectedAgents: agentIdsStr,
+        selectedStatuses: "0,1",
+        alllocations: true,
+        showholidays: true,
+        showappointments: true,
+        showchanges: true,
+        workhoursonly: true,
+        showprojects: true,
+        isrecurringmaster: false,
+        showtasks: false,
+        showscheduledtickets: true,
+        utcoffset: offset,
+        start_date: startDate,
+        end_date: endDate,
+        agents: agentIdsStr,
+        appointmentsonly: true,
+        excluderecurringmaster: true,
+        showshifts: false,
+    };
 
-  return get<HaloAppointment[]>('/api/Appointment', params);
+    const response = await get<unknown>("/api/Appointment", params, options);
+    return parseHaloResponse<HaloAppointment[]>(
+        HaloAppointmentArraySchema,
+        response,
+        "Appointments",
+    );
 }
 
 /**
@@ -249,10 +284,16 @@ export async function getAppointments(
  * @returns Array with the created/updated appointment
  */
 export async function createOrUpdateAppointment(
-  appointment: Partial<HaloAppointment> & { id?: number }
+    appointment: Partial<HaloAppointment> & { id?: number },
+    options?: RequestOptions,
 ): Promise<HaloAppointment[]> {
-  // Halo API requires appointments to be sent as an array
-  return post<HaloAppointment[]>('/api/appointment', [appointment]);
+    // Halo API requires appointments to be sent as an array
+    const response = await post<unknown>("/api/appointment", [appointment], options);
+    return parseHaloResponse<HaloAppointment[]>(
+        HaloAppointmentArraySchema,
+        response,
+        "Appointment",
+    );
 }
 
 // ============================================================================
@@ -267,17 +308,19 @@ export async function createOrUpdateAppointment(
  * @returns SearchUsersResponse with users array and count
  */
 export async function searchUsers(
-  params: SearchUsersParams = {}
+    params: SearchUsersParams = {},
+    options?: RequestOptions,
 ): Promise<SearchUsersResponse> {
-  const defaultParams: SearchUsersParams = {
-    count: 50,
-    includeserviceaccount: false,
-    onlyprospects: false,
-    onlyusers: true,
-    ...params,
-  };
+    const defaultParams: SearchUsersParams = {
+        count: 50,
+        includeserviceaccount: false,
+        onlyprospects: false,
+        onlyusers: true,
+        ...params,
+    };
 
-  return get<SearchUsersResponse>('/api/Users', defaultParams);
+    const response = await get<unknown>("/api/Users", defaultParams, options);
+    return parseHaloResponse<SearchUsersResponse>(SearchUsersResponseSchema, response, "Users");
 }
 
 /**
@@ -288,9 +331,11 @@ export async function searchUsers(
  * @returns Array of HaloCategory objects
  */
 export async function getCategories(
-  params: GetCategoriesParams
+    params: GetCategoriesParams,
+    options?: RequestOptions,
 ): Promise<HaloCategory[]> {
-  return get<HaloCategory[]>('/api/Category', params);
+    const response = await get<unknown>("/api/Category", params, options);
+    return parseHaloResponse<HaloCategory[]>(HaloCategoryArraySchema, response, "Categories");
 }
 
 /**
@@ -301,11 +346,13 @@ export async function getCategories(
  * @returns Array of HaloTeam objects (filtered for active teams that handle requests)
  */
 export async function getTeams(
-  params: GetTeamsParams = {}
+    params: GetTeamsParams = {},
+    options?: RequestOptions,
 ): Promise<HaloTeam[]> {
-  const teams = await get<HaloTeam[]>('/api/team', params);
-  // Filter to only active teams that handle requests
-  return teams.filter((team) => team.forrequests && !team.inactive);
+    const response = await get<unknown>("/api/team", params, options);
+    const teams = parseHaloResponse<HaloTeam[]>(HaloTeamArraySchema, response, "Teams");
+    // Filter to only active teams that handle requests
+    return teams.filter((team) => team.forrequests && !team.inactive);
 }
 
 /**
@@ -316,15 +363,17 @@ export async function getTeams(
  * @returns Array of HaloAgent objects
  */
 export async function getAgents(
-  params: GetAgentsParams = {}
+    params: GetAgentsParams = {},
+    options?: RequestOptions,
 ): Promise<HaloAgent[]> {
-  const defaultParams: GetAgentsParams = {
-    reassign: true,
-    basic_fields_only: true,
-    ...params,
-  };
+    const defaultParams: GetAgentsParams = {
+        reassign: true,
+        basic_fields_only: true,
+        ...params,
+    };
 
-  return get<HaloAgent[]>('/api/agent', defaultParams);
+    const response = await get<unknown>("/api/agent", defaultParams, options);
+    return parseHaloResponse<HaloAgent[]>(HaloAgentArraySchema, response, "Agents");
 }
 
 /**
@@ -335,16 +384,18 @@ export async function getAgents(
  * @returns GetSitesResponse with sites array and pagination metadata
  */
 export async function getSites(
-  params: GetSitesParams = {}
+    params: GetSitesParams = {},
+    options?: RequestOptions,
 ): Promise<GetSitesResponse> {
-  const defaultParams: GetSitesParams = {
-    pageinate: true,
-    page_no: 1,
-    page_size: 100,
-    ...params,
-  };
+    const defaultParams: GetSitesParams = {
+        pageinate: true,
+        page_no: 1,
+        page_size: 100,
+        ...params,
+    };
 
-  return get<GetSitesResponse>('/api/site', defaultParams);
+    const response = await get<unknown>("/api/site", defaultParams, options);
+    return parseHaloResponse<GetSitesResponse>(GetSitesResponseSchema, response, "Sites");
 }
 
 /**
@@ -355,8 +406,10 @@ export async function getSites(
  * @returns Array with the created/updated ticket
  */
 export async function createOrUpdateTicket(
-  ticketData: CreateTicketPayload
+    ticketData: CreateTicketPayload,
+    options?: RequestOptions,
 ): Promise<Ticket[]> {
-  // Halo API requires tickets to be sent as an array
-  return post<Ticket[]>('/api/Tickets', [ticketData]);
+    // Halo API requires tickets to be sent as an array
+    const response = await post<unknown>("/api/Tickets", [ticketData], options);
+    return parseHaloResponse<Ticket[]>(TicketArraySchema, response, "Ticket");
 }

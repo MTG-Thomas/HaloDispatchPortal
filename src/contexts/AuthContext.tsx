@@ -1,132 +1,164 @@
 /* eslint-disable react-refresh/only-export-components */
 import React, {
-  createContext,
-  useContext,
-  useEffect,
-  useState,
-  useCallback,
-  type ReactNode,
-} from 'react';
-import { useNavigate } from 'react-router-dom';
-import type { HaloUser } from '@/services/auth/types';
-import * as authService from '@/services/auth/authService';
-import { useConfig } from '@/hooks/useConfig';
+    createContext,
+    useContext,
+    useEffect,
+    useState,
+    useCallback,
+    type ReactNode,
+} from "react";
+import { useNavigate } from "react-router-dom";
+import type { HaloUser } from "@/services/auth/types";
+import * as authService from "@/services/auth/authService";
+import { useConfig } from "@/hooks/useConfig";
 
 interface AuthContextType {
-  isAuthenticated: boolean;
-  user: HaloUser | null;
-  isLoading: boolean;
-  startAuth: () => Promise<void>;
-  logout: () => void;
-  handleCallback: (code: string) => Promise<boolean>;
+    isAuthenticated: boolean;
+    user: HaloUser | null;
+    isLoading: boolean;
+    startAuth: () => Promise<void>;
+    logout: () => void;
+    handleCallback: (code: string, state: string | null) => Promise<boolean>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
+    const context = useContext(AuthContext);
+    if (context === undefined) {
+        throw new Error("useAuth must be used within an AuthProvider");
+    }
+    return context;
 };
 
 interface AuthProviderProps {
-  children: ReactNode;
+    children: ReactNode;
 }
 
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [user, setUser] = useState<HaloUser | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const navigate = useNavigate();
-  const { config, isLoaded } = useConfig();
+    const [isAuthenticated, setIsAuthenticated] = useState(false);
+    const [user, setUser] = useState<HaloUser | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const navigate = useNavigate();
+    const { config, isLoaded } = useConfig();
 
-  // Check authentication status when config is loaded
-  useEffect(() => {
-    if (!isLoaded) return;
+    // Check authentication status when config is loaded, attempting one
+    // proactive refresh when tokens exist but are expired or near expiry.
+    useEffect(() => {
+        if (!isLoaded) return;
 
-    const checkAuth = () => {
-      const authenticated = authService.isAuthenticated();
-      setIsAuthenticated(authenticated);
+        // A refresh round-trip can outlive this run when config changes mid-flight;
+        // the flag keeps a stale run from overwriting newer state.
+        let cancelled = false;
 
-      if (authenticated) {
-        const currentUser = authService.getCurrentUser();
-        setUser(currentUser);
-      } else {
-        setUser(null);
-      }
+        const checkAuth = async () => {
+            let authenticated = authService.isAuthenticated();
 
-      setIsLoading(false);
+            if (
+                !authenticated &&
+                config.authServer &&
+                config.clientId &&
+                authService.loadTokens()?.refresh_token
+            ) {
+                const refreshed = await authService.ensureFreshToken({
+                    authServer: config.authServer,
+                    clientId: config.clientId,
+                    redirectUri: config.redirectUri,
+                });
+                if (cancelled) return;
+                authenticated = refreshed && authService.isAuthenticated();
+            }
+
+            if (cancelled) return;
+            setIsAuthenticated(authenticated);
+
+            if (authenticated) {
+                const currentUser = authService.getCurrentUser();
+                setUser(currentUser);
+            } else {
+                setUser(null);
+            }
+
+            setIsLoading(false);
+        };
+
+        checkAuth();
+        return () => {
+            cancelled = true;
+        };
+    }, [isLoaded, config.authServer, config.clientId, config.redirectUri]);
+
+    const startAuth = async () => {
+        try {
+            await authService.startAuth({
+                authServer: config.authServer,
+                clientId: config.clientId,
+                redirectUri: config.redirectUri,
+            });
+        } catch (error) {
+            console.error(
+                "Failed to start auth:",
+                error instanceof Error ? error.message : "Unknown error",
+            );
+            throw error;
+        }
     };
 
-    checkAuth();
-  }, [isLoaded]);
+    const handleCallback = useCallback(
+        async (code: string, state: string | null): Promise<boolean> => {
+            try {
+                setIsLoading(true);
 
-  const startAuth = async () => {
-    try {
-      authService.startAuth({
-        authServer: config.authServer,
-        clientId: config.clientId,
-        redirectUri: config.redirectUri,
-      });
-    } catch (error) {
-      console.error('Failed to start auth:', error);
-      throw error;
-    }
-  };
+                const success = await authService.handleCallback(
+                    {
+                        authServer: config.authServer,
+                        clientId: config.clientId,
+                        redirectUri: config.redirectUri,
+                    },
+                    code,
+                    state,
+                );
 
-  const handleCallback = useCallback(
-    async (code: string): Promise<boolean> => {
-      try {
-        setIsLoading(true);
+                if (success) {
+                    // Re-check authentication status
+                    const authenticated = authService.isAuthenticated();
+                    setIsAuthenticated(authenticated);
 
-        const success = await authService.handleCallback(
-          {
-            authServer: config.authServer,
-            clientId: config.clientId,
-            redirectUri: config.redirectUri,
-          },
-          code
-        );
+                    if (authenticated) {
+                        const currentUser = authService.getCurrentUser();
+                        setUser(currentUser);
+                    }
+                }
 
-        if (success) {
-          // Re-check authentication status
-          const authenticated = authService.isAuthenticated();
-          setIsAuthenticated(authenticated);
+                setIsLoading(false);
+                return success;
+            } catch (error) {
+                console.error(
+                    "Failed to handle auth callback:",
+                    error instanceof Error ? error.message : "Unknown error",
+                );
+                setIsLoading(false);
+                return false;
+            }
+        },
+        [config.authServer, config.clientId, config.redirectUri],
+    );
 
-          if (authenticated) {
-            const currentUser = authService.getCurrentUser();
-            setUser(currentUser);
-          }
-        }
+    const logout = () => {
+        authService.logout();
+        setUser(null);
+        setIsAuthenticated(false);
+        navigate("/login");
+    };
 
-        setIsLoading(false);
-        return success;
-      } catch (error) {
-        console.error('Failed to handle auth callback:', error);
-        setIsLoading(false);
-        return false;
-      }
-    },
-    [config.authServer, config.clientId, config.redirectUri]
-  );
+    const value: AuthContextType = {
+        isAuthenticated,
+        user,
+        isLoading,
+        startAuth,
+        logout,
+        handleCallback,
+    };
 
-  const logout = () => {
-    authService.logout();
-    setUser(null);
-    setIsAuthenticated(false);
-    navigate('/login');
-  };
-
-  const value: AuthContextType = {
-    isAuthenticated,
-    user,
-    isLoading,
-    startAuth,
-    logout,
-    handleCallback,
-  };
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+    return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

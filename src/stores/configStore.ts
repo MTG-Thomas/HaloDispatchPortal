@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { normalizeServerUrl } from '@/lib/server-url';
 
 export interface HaloConfig {
   tenant: string;
@@ -35,8 +36,31 @@ export const useConfigStore = create<ConfigState>()(
       isConfigured: false,
 
       setConfig: (updates) => {
+        // Normalize server URLs centrally so every entry point (dialog,
+        // shared login links, rehydrated storage) stores the same shape.
+        const normalizedUpdates: Partial<HaloConfig> = { ...updates };
+        if (normalizedUpdates.authServer !== undefined) {
+          normalizedUpdates.authServer = normalizeServerUrl(
+            normalizedUpdates.authServer
+          );
+        }
+        if (normalizedUpdates.resourceServer !== undefined) {
+          normalizedUpdates.resourceServer = normalizeServerUrl(
+            normalizedUpdates.resourceServer
+          );
+        }
+        if (normalizedUpdates.tenant !== undefined) {
+          normalizedUpdates.tenant = normalizedUpdates.tenant.trim();
+        }
+        if (normalizedUpdates.clientId !== undefined) {
+          normalizedUpdates.clientId = normalizedUpdates.clientId.trim();
+        }
+        if (normalizedUpdates.redirectUri !== undefined) {
+          normalizedUpdates.redirectUri = normalizedUpdates.redirectUri.trim();
+        }
+
         set((state) => {
-          const newConfig = { ...state.config, ...updates };
+          const newConfig = { ...state.config, ...normalizedUpdates };
           const isConfigured = Boolean(
             newConfig.clientId &&
               newConfig.clientId.trim() !== '' &&
@@ -79,6 +103,17 @@ export const useConfigStore = create<ConfigState>()(
       partialize: (state) => ({ config: state.config }),
       onRehydrateStorage: () => (state) => {
         if (state) {
+          // Normalize rehydrated values (persisted storage is untrusted input).
+          state.config.authServer = normalizeServerUrl(
+            state.config.authServer ?? ''
+          );
+          state.config.resourceServer = normalizeServerUrl(
+            state.config.resourceServer ?? ''
+          );
+          state.config.tenant = (state.config.tenant ?? '').trim();
+          state.config.clientId = (state.config.clientId ?? '').trim();
+          state.config.redirectUri = (state.config.redirectUri ?? '').trim();
+
           // Generate redirect URI on rehydration
           const defaultRedirectUri = state.generateRedirectUri();
           if (!state.config.redirectUri) {

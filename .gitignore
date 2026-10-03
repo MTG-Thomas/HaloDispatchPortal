@@ -12,6 +12,17 @@ dist
 dist-ssr
 *.local
 
+# Environment files (never commit secrets; see README setup)
+.env
+.env.*
+!.env.example
+
+# Test artifacts
+coverage
+test-results
+playwright-report
+playwright/.cache
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

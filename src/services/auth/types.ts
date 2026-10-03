@@ -4,6 +4,12 @@ export interface HaloTokens {
   expires_in: number;
   token_type: string;
   scope: string;
+  /**
+   * Epoch milliseconds when the token set was obtained, stamped locally by
+   * saveTokens(). Optional only so token sets persisted before this field
+   * existed still parse; a missing value is treated as expired.
+   */
+  obtained_at?: number;
 }
 
 export interface HaloUser {

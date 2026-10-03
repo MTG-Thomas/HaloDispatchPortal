@@ -1,26 +1,16 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { Navigate } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
-import * as authService from '@/services/auth/authService';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface ProtectedRouteProps {
   children: React.ReactNode;
 }
 
 export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-
-  useEffect(() => {
-    // Check authentication directly from localStorage
-    const checkAuth = () => {
-      const authenticated = authService.isAuthenticated();
-      setIsAuthenticated(authenticated);
-      setIsLoading(false);
-    };
-
-    checkAuth();
-  }, []);
+  // Auth state (including the proactive refresh on mount) is owned by
+  // AuthContext; this route only gates rendering on it.
+  const { isAuthenticated, isLoading } = useAuth();
 
   // Show loading spinner while checking authentication
   if (isLoading) {

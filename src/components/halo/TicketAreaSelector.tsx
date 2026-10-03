@@ -12,7 +12,8 @@ import {
  * TicketAreaSelector Component
  *
  * Allows users to select a ticket area (Service Desk, Projects, Changes, etc.)
- * Persists selection to localStorage and automatically loads view lists on change
+ * Selection is persisted by the dispatch store; changing it automatically
+ * loads view lists via the store action.
  */
 export function TicketAreaSelector() {
   const {
@@ -33,27 +34,9 @@ export function TicketAreaSelector() {
     }
   }, [clientCache, clientCacheLoading, clientCacheError, criticalApiError, loadClientCache]);
 
-  // Restore saved ticket area from localStorage on mount
-  useEffect(() => {
-    if (clientCache && !selectedTicketAreaId) {
-      const saved = localStorage.getItem('halo-selected-ticket-area');
-      if (saved) {
-        const areaId = parseInt(saved, 10);
-        const area = clientCache.ticketareas.find((a) => a.id === areaId);
-        if (area) {
-          setSelectedTicketArea(areaId);
-        }
-      } else if (clientCache.ticketareas.length > 0) {
-        // Auto-select first area if none saved
-        setSelectedTicketArea(clientCache.ticketareas[0].id);
-      }
-    }
-  }, [clientCache, selectedTicketAreaId, setSelectedTicketArea]);
-
   const handleAreaChange = (value: string) => {
     const areaId = parseInt(value, 10);
     setSelectedTicketArea(areaId);
-    localStorage.setItem('halo-selected-ticket-area', value);
   };
 
   if (!clientCache || clientCache.ticketareas.length === 0) {
