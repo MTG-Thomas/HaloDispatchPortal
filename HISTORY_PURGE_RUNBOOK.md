@@ -92,7 +92,9 @@ Then on GitHub (or the host in use):
 ```sh
 git clone --mirror <repo-url> purge.git
 cd purge.git
-bfg --delete-files '{1_ClientCache,4_Tickets}.json' .
+# --no-blob-protection: BFG otherwise keeps HEAD untouched, which would
+# retain the files there. Reapply the synthetic fixtures afterwards (below).
+bfg --no-blob-protection --delete-files '{1_ClientCache,4_Tickets}.json' .
 git reflog expire --expire=now --all && git gc --prune=now --aggressive
 git push origin --force --all && git push origin --force --tags
 ```
@@ -101,6 +103,7 @@ Same verification and re-clone steps apply.
 
 ## After the purge
 
-- Re-apply the synthetic `api_responses/1_ClientCache.json` on the new HEAD
-  (the purge removes the path from every commit, including HEAD).
+- Re-apply the synthetic `api_responses/1_ClientCache.json` and
+  `api_responses/4_Tickets.json` on the new HEAD (the purge removes the
+  paths from every commit, including HEAD).
 - Keep this runbook: it documents why history was rewritten and when.

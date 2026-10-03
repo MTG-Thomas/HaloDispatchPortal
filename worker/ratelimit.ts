@@ -54,6 +54,15 @@ function memoryAllows(ip: string, nowMs: number): boolean {
                 memory.delete(key);
             }
         }
+        if (memory.size >= RATE_LIMIT_MEMORY_MAX_IPS) {
+            // Sweep freed nothing (all entries still active): evict the
+            // oldest instead of rescanning on every new IP. Map preserves
+            // insertion order, so the first key is the oldest tracker.
+            const oldest = memory.keys().next();
+            if (!oldest.done) {
+                memory.delete(oldest.value);
+            }
+        }
     }
     const kept = (memory.get(ip) ?? []).filter((t) => t > windowStart);
     if (kept.length >= RATE_LIMIT_MEMORY_MAX) {
