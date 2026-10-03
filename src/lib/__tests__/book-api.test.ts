@@ -344,7 +344,7 @@ describe("dispatcher tracking", () => {
     describe("viewCount parsing", () => {
         it("passes server view counts through", async () => {
             mockFetchOnce(200, summary({ viewCount: 4 }));
-            await expect(fetchBookingStatus("rid-1", ACCESS)).resolves.toMatchObject({
+            await expect(fetchBookingStatus("rid-1", SESSION)).resolves.toMatchObject({
                 viewCount: 4,
             });
         });
@@ -353,11 +353,11 @@ describe("dispatcher tracking", () => {
             const legacy = summary();
             delete (legacy as Partial<BookingRequestSummary>).viewCount;
             mockFetchOnce(200, legacy);
-            await expect(fetchBookingStatus("rid-1", ACCESS)).resolves.toMatchObject({
+            await expect(fetchBookingStatus("rid-1", SESSION)).resolves.toMatchObject({
                 viewCount: 0,
             });
             mockFetchOnce(200, { ...summary(), viewCount: "many" });
-            await expect(fetchBookingStatus("rid-1", ACCESS)).resolves.toMatchObject({
+            await expect(fetchBookingStatus("rid-1", SESSION)).resolves.toMatchObject({
                 viewCount: 0,
             });
         });
@@ -374,7 +374,7 @@ describe("dispatcher tracking", () => {
             const impl = mockFetchOnce(200, renewed);
             const result = await extendBookingRequest({
                 rid: "rid-1",
-                accessToken: ACCESS,
+                accessToken: SESSION,
                 days: 14,
             });
             expect(result).toEqual(renewed);
@@ -382,12 +382,12 @@ describe("dispatcher tracking", () => {
             expect(url).toBe("/api/book/requests/rid-1/extend");
             expect(init.method).toBe("POST");
             expect(JSON.parse(init.body as string)).toEqual({ days: 14 });
-            expect(authHeader(init)).toBe(`Bearer ${ACCESS}`);
+            expect(authHeader(init)).toBe(`Bearer ${SESSION}`);
         });
 
         it("sends an empty body when days is omitted", async () => {
             const impl = mockFetchOnce(200, renewed);
-            await extendBookingRequest({ rid: "rid-1", accessToken: ACCESS });
+            await extendBookingRequest({ rid: "rid-1", accessToken: SESSION });
             const [, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
             expect(JSON.parse(init.body as string)).toEqual({});
         });
@@ -397,7 +397,7 @@ describe("dispatcher tracking", () => {
             mockFetchOnce(409, { error: "Booking request is already final", ...terminal });
             const error = await extendBookingRequest({
                 rid: "rid-1",
-                accessToken: ACCESS,
+                accessToken: SESSION,
             }).catch((e: unknown) => e);
             expect(error).toBeInstanceOf(BookingTrackerError);
             expect((error as BookingTrackerError).code).toBe("conflict");
@@ -411,12 +411,12 @@ describe("dispatcher tracking", () => {
             ).rejects.toMatchObject({ code: "unauthorized" });
             mockFetchOnce(404, { error: "Booking request not found" });
             await expect(
-                extendBookingRequest({ rid: "rid-x", accessToken: ACCESS }),
+                extendBookingRequest({ rid: "rid-x", accessToken: SESSION }),
             ).rejects.toMatchObject({ code: "not-found" });
             mockFetchOnce(400, { error: "Invalid extend request" });
             const error = await extendBookingRequest({
                 rid: "rid-1",
-                accessToken: ACCESS,
+                accessToken: SESSION,
                 days: 99,
             }).catch((e: unknown) => e);
             expect(error).toBeInstanceOf(BookingTrackerError);
@@ -426,7 +426,7 @@ describe("dispatcher tracking", () => {
         it("rejects malformed success bodies", async () => {
             mockFetchOnce(200, { rid: "rid-1" });
             await expect(
-                extendBookingRequest({ rid: "rid-1", accessToken: ACCESS }),
+                extendBookingRequest({ rid: "rid-1", accessToken: SESSION }),
             ).rejects.toMatchObject({ code: "network-error" });
         });
     });
@@ -448,7 +448,7 @@ describe("dispatcher tracking", () => {
 
         it("GETs one request's audit trail", async () => {
             const impl = mockFetchOnce(200, trail);
-            const result = await fetchBookingAudit("rid-1", ACCESS);
+            const result = await fetchBookingAudit("rid-1", SESSION);
             expect(result).toEqual({
                 rid: "rid-1",
                 viewCount: 2,
@@ -472,7 +472,7 @@ describe("dispatcher tracking", () => {
                 viewCount: 1,
                 events: [{ type: "view", at: "2026-10-03T10:00:00.000Z" }, null, { nope: true }],
             });
-            const result = await fetchBookingAudit("rid-1", ACCESS);
+            const result = await fetchBookingAudit("rid-1", SESSION);
             expect(result.events).toEqual([
                 { type: "view", at: "2026-10-03T10:00:00.000Z", detail: null },
             ]);
@@ -486,22 +486,22 @@ describe("dispatcher tracking", () => {
                     { type: "cancel", at: "2026-10-03T11:00:00.000Z" },
                 ],
             });
-            await expect(fetchBookingAudit("rid-1", ACCESS)).resolves.toMatchObject({
+            await expect(fetchBookingAudit("rid-1", SESSION)).resolves.toMatchObject({
                 viewCount: 1,
             });
         });
 
         it("rejects a non-trail envelope and maps 401/404", async () => {
             mockFetchOnce(200, { events: "nope" });
-            await expect(fetchBookingAudit("rid-1", ACCESS)).rejects.toMatchObject({
+            await expect(fetchBookingAudit("rid-1", SESSION)).rejects.toMatchObject({
                 code: "network-error",
             });
             mockFetchOnce(401, { error: "Unauthorized" });
-            await expect(fetchBookingAudit("rid-1", ACCESS)).rejects.toMatchObject({
+            await expect(fetchBookingAudit("rid-1", SESSION)).rejects.toMatchObject({
                 code: "unauthorized",
             });
             mockFetchOnce(404, { error: "Booking request not found" });
-            await expect(fetchBookingAudit("rid-x", ACCESS)).rejects.toMatchObject({
+            await expect(fetchBookingAudit("rid-x", SESSION)).rejects.toMatchObject({
                 code: "not-found",
             });
         });

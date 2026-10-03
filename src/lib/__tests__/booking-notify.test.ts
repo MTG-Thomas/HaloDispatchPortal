@@ -14,6 +14,7 @@ function summary(overrides: Partial<BookingRequestSummary> = {}): BookingRequest
         exp: 9_999_999_999,
         clickedAt: null,
         bookedAppointmentId: null,
+        viewCount: 0,
         ...overrides,
     };
 }

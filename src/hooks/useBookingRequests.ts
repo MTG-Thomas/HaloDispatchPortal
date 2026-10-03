@@ -185,15 +185,15 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
     );
 
     const extend = useCallback(async (rid: string, days?: number): Promise<BookingResendResult> => {
-        const tokens = loadTokens();
-        if (!tokens?.access_token) {
+        const session = loadDispatcherSession();
+        if (!session) {
             throw new BookingTrackerError("unauthorized", "Sign in to Halo first.");
         }
         setBusyRid(rid);
         try {
             const renewed = await extendBookingRequest({
                 rid,
-                accessToken: tokens.access_token,
+                accessToken: session.sessionId,
                 ...(days === undefined ? {} : { days }),
             }).catch((err: unknown) => {
                 // Raced to terminal elsewhere: adopt the current state.
@@ -238,11 +238,11 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
     }, []);
 
     const fetchAudit = useCallback(async (rid: string): Promise<BookingAuditTrail> => {
-        const tokens = loadTokens();
-        if (!tokens?.access_token) {
+        const session = loadDispatcherSession();
+        if (!session) {
             throw new BookingTrackerError("unauthorized", "Sign in to Halo first.");
         }
-        return fetchBookingAudit(rid, tokens.access_token);
+        return fetchBookingAudit(rid, session.sessionId);
     }, []);
 
     const byTicket = useMemo(() => {
