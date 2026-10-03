@@ -14,9 +14,11 @@
  *
  * Tuning per tenant: adjust PRIORITY_SCORE_WEIGHTS and pass a tenant
  * priority map as the third argument (Halo priority ids differ per
- * tenant; unknown ids score 0). DEFAULT_PRIORITY_BOOST_MAP is the
- * fallback when no map is passed. Missing/invalid dates contribute 0 for
- * their component. The Halo "1899-12-30" sentinel counts as no date.
+ * tenant; unknown ids score 0). buildTenantPriorityBoostMap() derives
+ * that map from the tenant's priority ids, and resolvePriorityBoostMap()
+ * falls back to DEFAULT_PRIORITY_BOOST_MAP when no tenant ids are
+ * present. Missing/invalid dates contribute 0 for their component. The
+ * Halo "1899-12-30" sentinel counts as no date.
  */
 
 import { computeSla } from "@/utils/enrich-ticket";
@@ -138,6 +140,47 @@ export function scoreBreakdown(
     const priorityBoost = scorePriorityBoost(ticket, priorityBoostMap);
     const total = Math.max(0, Math.min(100, Math.round(sla + age + staleness + priorityBoost)));
     return { sla, age, staleness, priorityBoost, total };
+}
+
+/**
+ * Build a tenant boost map from the tenant's priority ids (e.g. the
+ * distinct priority_ids on the loaded tickets — ClientCache carries no
+ * priority catalogue, so the embedded ticket priority objects are the
+ * tenant source and no extra API call is needed).
+ *
+ * Halo convention, matching the documented 1-highest-through-4-lowest
+ * default: lower id = more severe. Ids are deduplicated, sorted
+ * ascending, and spread linearly from priorityBoostMax (most severe) to
+ * 0 (least severe); a single id maps to the max. Non-positive and
+ * non-integer ids are ignored (0 means "no priority" in Halo forms and
+ * must never outrank a real priority). Empty input yields {}.
+ */
+export function buildTenantPriorityBoostMap(priorityIds: number[]): Record<number, number> {
+    const { priorityBoostMax } = PRIORITY_SCORE_WEIGHTS;
+    const ids = [...new Set(priorityIds.filter((id) => Number.isInteger(id) && id > 0))].sort(
+        (a, b) => a - b,
+    );
+    if (ids.length === 0) return {};
+    if (ids.length === 1) return { [ids[0]]: priorityBoostMax };
+    const map: Record<number, number> = {};
+    const last = ids.length - 1;
+    ids.forEach((id, index) => {
+        map[id] = Math.round((priorityBoostMax * (last - index)) / last);
+    });
+    return map;
+}
+
+/**
+ * Resolve the boost map for scoring: the tenant map when tenant priority
+ * ids are present, otherwise DEFAULT_PRIORITY_BOOST_MAP. Returns the
+ * DEFAULT object itself (not a copy) on the fallback path.
+ */
+export function resolvePriorityBoostMap(
+    priorityIds: number[] | null | undefined,
+): Record<number, number> {
+    if (!priorityIds || priorityIds.length === 0) return DEFAULT_PRIORITY_BOOST_MAP;
+    const built = buildTenantPriorityBoostMap(priorityIds);
+    return Object.keys(built).length === 0 ? DEFAULT_PRIORITY_BOOST_MAP : built;
 }
 
 /** Dispatch priority score, 0-100 (higher = needs attention sooner). */

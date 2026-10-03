@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+    buildTenantPriorityBoostMap,
     DEFAULT_PRIORITY_BOOST_MAP,
     PRIORITY_SCORE_WEIGHTS,
+    resolvePriorityBoostMap,
     scoreBreakdown,
     scoreTicket,
     type ScorableTicket,
@@ -133,5 +135,52 @@ describe("scoreTicket", () => {
         expect(breakdown.age).toBe(0);
         expect(breakdown.staleness).toBe(0);
         expect(breakdown.sla).toBe(0);
+    });
+});
+
+describe("buildTenantPriorityBoostMap", () => {
+    it("reproduces the default map for standard ids, tolerating order and duplicates", () => {
+        expect(buildTenantPriorityBoostMap([4, 2, 1, 3, 1, 3])).toEqual(DEFAULT_PRIORITY_BOOST_MAP);
+    });
+
+    it("maps a renumbered tenant highest 15 -> lowest 0 with linear middles", () => {
+        expect(buildTenantPriorityBoostMap([10, 20, 30])).toEqual({ 10: 15, 20: 8, 30: 0 });
+        expect(buildTenantPriorityBoostMap([50, 10])).toEqual({ 10: 15, 50: 0 });
+    });
+
+    it("maps a single tenant id to the max boost", () => {
+        expect(buildTenantPriorityBoostMap([42])).toEqual({
+            42: PRIORITY_SCORE_WEIGHTS.priorityBoostMax,
+        });
+    });
+
+    it("ignores non-positive and non-integer ids so 'no priority' never outranks real ones", () => {
+        expect(buildTenantPriorityBoostMap([0, -1, 2.5, Number.NaN, 10])).toEqual({ 10: 15 });
+        expect(buildTenantPriorityBoostMap([])).toEqual({});
+        expect(buildTenantPriorityBoostMap([0, -3])).toEqual({});
+    });
+
+    it("differentiates renumbered ids through scoreTicket/scoreBreakdown", () => {
+        const tenantMap = buildTenantPriorityBoostMap([10, 50]);
+        expect(scoreBreakdown(ticket({ priority_id: 10 }), NOW, tenantMap).priorityBoost).toBe(15);
+        expect(scoreBreakdown(ticket({ priority_id: 50 }), NOW, tenantMap).priorityBoost).toBe(0);
+        // Under the default map both ids are unknown (0), so the tenant map must outrank it.
+        expect(scoreTicket(ticket({ priority_id: 10 }), NOW, tenantMap)).toBeGreaterThan(
+            scoreTicket(ticket({ priority_id: 50 }), NOW, tenantMap),
+        );
+    });
+});
+
+describe("resolvePriorityBoostMap", () => {
+    it("returns the DEFAULT map itself when the tenant source is absent", () => {
+        expect(resolvePriorityBoostMap(null)).toBe(DEFAULT_PRIORITY_BOOST_MAP);
+        expect(resolvePriorityBoostMap(undefined)).toBe(DEFAULT_PRIORITY_BOOST_MAP);
+        expect(resolvePriorityBoostMap([])).toBe(DEFAULT_PRIORITY_BOOST_MAP);
+        expect(resolvePriorityBoostMap([0, -3])).toBe(DEFAULT_PRIORITY_BOOST_MAP);
+    });
+
+    it("returns the built tenant map when tenant ids are present", () => {
+        expect(resolvePriorityBoostMap([50, 10, 10])).toEqual({ 10: 15, 50: 0 });
+        expect(resolvePriorityBoostMap([1, 2, 3, 4])).toEqual(DEFAULT_PRIORITY_BOOST_MAP);
     });
 });

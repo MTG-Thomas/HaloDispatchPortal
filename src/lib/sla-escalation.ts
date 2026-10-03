@@ -43,12 +43,17 @@ function fixByTime(value: string | null | undefined): number {
  * dispatch score descending, then earliest fix-by date, then id for
  * determinism. Does not mutate the input.
  */
-export function sortBreachingNext<T extends EscalationTicket>(tickets: T[], now: Date): T[] {
+export function sortBreachingNext<T extends EscalationTicket>(
+    tickets: T[],
+    now: Date,
+    priorityBoostMap?: Record<number, number>,
+): T[] {
     return [...tickets].sort((a, b) => {
         const rankA = slaRank(computeSla(a.fixbydate, a.excludefromsla, a.onhold, now).slaState);
         const rankB = slaRank(computeSla(b.fixbydate, b.excludefromsla, b.onhold, now).slaState);
         if (rankA !== rankB) return rankA - rankB;
-        const scoreDiff = scoreTicket(b, now) - scoreTicket(a, now);
+        const scoreDiff =
+            scoreTicket(b, now, priorityBoostMap) - scoreTicket(a, now, priorityBoostMap);
         if (scoreDiff !== 0) return scoreDiff;
         const dateDiff = fixByTime(a.fixbydate) - fixByTime(b.fixbydate);
         if (dateDiff !== 0) return dateDiff;

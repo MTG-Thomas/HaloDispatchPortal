@@ -42,7 +42,7 @@ import { useRowWindowing } from "@/hooks/useRowWindowing";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { cn } from "@/lib/utils";
 import { computeSla } from "@/utils/enrich-ticket";
-import { scoreBreakdown, scoreTicket } from "@/lib/priority-score";
+import { resolvePriorityBoostMap, scoreBreakdown, scoreTicket } from "@/lib/priority-score";
 import { sortBreachingNext } from "@/lib/sla-escalation";
 import { requestOverdueAlertPermission, useSlaOverdueAlerts } from "@/hooks/useSlaOverdueAlerts";
 import {
@@ -395,8 +395,16 @@ interface SortState {
  * Halo priority chip plus the client-side dispatch score badge. The badge
  * title carries the score breakdown (SLA / age / staleness / priority).
  */
-function PriorityCell({ ticket, now }: { ticket: EnrichedTicket; now: Date }) {
-    const breakdown = scoreBreakdown(ticket, now);
+function PriorityCell({
+    ticket,
+    now,
+    boostMap,
+}: {
+    ticket: EnrichedTicket;
+    now: Date;
+    boostMap: Record<number, number>;
+}) {
+    const breakdown = scoreBreakdown(ticket, now, boostMap);
     const title =
         `Dispatch score ${breakdown.total}/100 — ` +
         `SLA ${Math.round(breakdown.sla)}, age ${Math.round(breakdown.age)}, ` +
@@ -671,18 +679,28 @@ export function TicketList() {
         });
     }, [haloTickets, searchTerm]);
 
+    // Tenant priority boost map, rebuilt when the loaded tickets change:
+    // distinct priority_ids from the already-loaded rows (ClientCache has
+    // no priority catalogue, and scoring makes no extra API calls).
+    // Absent/empty ids fall back to DEFAULT_PRIORITY_BOOST_MAP.
+    const priorityBoostMap = useMemo(
+        () => resolvePriorityBoostMap(haloTickets.map((ticket) => ticket.priority_id)),
+        [haloTickets],
+    );
+
     // "Breaching next" lane takes precedence over header sorting: SLA band
     // first, then dispatch score. Otherwise sort by dispatch priority score
     // when the Priority header was clicked (id tiebreak keeps it deterministic).
     const sortedTickets = useMemo(() => {
-        if (breachingNext) return sortBreachingNext(filteredTickets, now);
+        if (breachingNext) return sortBreachingNext(filteredTickets, now, priorityBoostMap);
         if (sort?.columnId !== SCORE_SORT_COLUMN_ID) return filteredTickets;
         const factor = sort.direction === "desc" ? -1 : 1;
         return [...filteredTickets].sort((a, b) => {
-            const diff = scoreTicket(a, now) - scoreTicket(b, now);
+            const diff =
+                scoreTicket(a, now, priorityBoostMap) - scoreTicket(b, now, priorityBoostMap);
             return diff !== 0 ? diff * factor : a.id - b.id;
         });
-    }, [filteredTickets, breachingNext, sort, now]);
+    }, [filteredTickets, breachingNext, sort, now, priorityBoostMap]);
 
     // Calculate total pages
     const totalPages = Math.ceil(totalRecords / pageSize);
@@ -808,7 +826,7 @@ export function TicketList() {
                 return <SlaCell ticket={ticket} now={now} />;
 
             case "priority":
-                return <PriorityCell ticket={ticket} now={now} />;
+                return <PriorityCell ticket={ticket} now={now} boostMap={priorityBoostMap} />;
 
             case "team":
                 return <span className="text-xs">{ticket.team}</span>;
