@@ -65,6 +65,11 @@ export interface BookingRequestRecord {
      */
     businessOffsetMin?: number;
     /**
+     * Buffer minutes around each busy block, captured at mint time. Older
+     * records omit it and fall back to the zero-buffer default.
+     */
+    bufferMin?: number;
+    /**
      * First customer page view (claim-on-load). Slice 1 mints `pending`
      * records, which play the "sent" role: the link is issued but unopened.
      * The first validated public view stamps this field (the "clicked" flip);
@@ -83,6 +88,7 @@ export interface NewBookingRequest {
     sealedTokens: SealedTokenPair;
     exp: number;
     businessOffsetMin?: number;
+    bufferMin?: number;
 }
 
 /** Booking links live 7 days; KV records expire with them. */
@@ -198,6 +204,7 @@ export async function createBookingRequest(
         ...(input.businessOffsetMin !== undefined
             ? { businessOffsetMin: input.businessOffsetMin }
             : {}),
+        ...(input.bufferMin !== undefined ? { bufferMin: input.bufferMin } : {}),
     };
     await kv.put(key, JSON.stringify(record), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
     return record;

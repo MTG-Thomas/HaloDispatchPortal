@@ -37,6 +37,32 @@ function freshIp(): string {
     return `10.9.0.${ipCounter}`;
 }
 
+/** A future weekday (UTC) safely inside the 14-day slot window. */
+function futureWeekdayDateString(): string {
+    const now = new Date();
+    const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 2));
+    while (day.getUTCDay() === 0 || day.getUTCDay() === 6) {
+        day.setUTCDate(day.getUTCDate() + 1);
+    }
+    return day.toISOString().slice(0, 10);
+}
+
+interface SlotDay {
+    date: string;
+    slots: { agentId: number; start: string; end: string }[];
+}
+
+function dayOrThrow(json: Record<string, unknown>, date: string): SlotDay {
+    const days = json.days as SlotDay[];
+    const day = days.find((d) => d.date === date);
+    if (!day) {
+        throw new Error(
+            `expected slots for ${date}, got ${JSON.stringify(days.map((d) => d.date))}`,
+        );
+    }
+    return day;
+}
+
 interface HaloStub {
     appointments?: unknown[];
     agents?: unknown[];
@@ -339,6 +365,63 @@ describe("slots endpoint", () => {
         expect((await getSlots(testEnv, rid, token)).status).toBe(200);
         expect(stub.calls.filter((c) => c.url.includes("/api/agent"))).toHaveLength(1);
     });
+
+    it("honors the minted buffer when offering slots", async () => {
+        const date = futureWeekdayDateString();
+        const appointments = [
+            {
+                id: 1,
+                agent_id: 7,
+                start_date: `${date}T09:00:00`,
+                end_date: `${date}T10:00:00`,
+                allday: false,
+            },
+        ];
+        const bufferedEnv = env();
+        stubHalo({ appointments });
+        const buffered = await mint(bufferedEnv, { bufferMin: 15 });
+        const bufferedSlots = await getSlots(bufferedEnv, buffered.rid, buffered.token);
+        expect(bufferedSlots.status).toBe(200);
+        const bufferedStarts = dayOrThrow(bufferedSlots.json, date)
+            .slots.filter((s) => s.agentId === 7)
+            .map((s) => s.start);
+        expect(bufferedStarts).not.toContain(`${date}T10:00:00.000Z`);
+        expect(bufferedStarts).toContain(`${date}T10:15:00.000Z`);
+
+        // Control: the same morning without a buffer offers back-to-back.
+        const plainEnv = env();
+        stubHalo({ appointments });
+        const plain = await mint(plainEnv);
+        const plainSlots = await getSlots(plainEnv, plain.rid, plain.token);
+        expect(
+            dayOrThrow(plainSlots.json, date)
+                .slots.filter((s) => s.agentId === 7)
+                .map((s) => s.start),
+        ).toContain(`${date}T10:00:00.000Z`);
+    });
+
+    it("offers nothing for over-capacity agents", async () => {
+        // 08:00-16:00 fills the 8h day; 16:00-17:00 looks free by overlap.
+        const date = futureWeekdayDateString();
+        const testEnv = env();
+        stubHalo({
+            appointments: [
+                {
+                    id: 1,
+                    agent_id: 7,
+                    start_date: `${date}T08:00:00`,
+                    end_date: `${date}T16:00:00`,
+                    allday: false,
+                },
+            ],
+        });
+        const { rid, token } = await mint(testEnv);
+        const response = await getSlots(testEnv, rid, token);
+        expect(response.status).toBe(200);
+        const day = dayOrThrow(response.json, date);
+        expect(day.slots.filter((s) => s.agentId === 7)).toHaveLength(0);
+        expect(day.slots.filter((s) => s.agentId === 9).length).toBeGreaterThan(0);
+    });
 });
 
 describe("book endpoint", () => {
@@ -527,6 +610,51 @@ describe("book endpoint", () => {
         });
         expect(rejected.status).toBe(400);
         expect(rejected.json.error).toBe("invalid-slot");
+    });
+
+    it("blocks buffered back-to-back bookings but keeps the single-book path", async () => {
+        const date = futureWeekdayDateString();
+        const slot = {
+            agentId: 7,
+            start: `${date}T10:00:00.000Z`,
+            end: `${date}T10:30:00.000Z`,
+        };
+        const adjacent = [
+            {
+                id: 2,
+                agent_id: 7,
+                start_date: `${date}T10:30:00`,
+                end_date: `${date}T11:00:00`,
+                allday: false,
+            },
+        ];
+
+        const bufferedEnv = env();
+        const bufferedStub = stubHalo({ appointments: adjacent });
+        const buffered = await mint(bufferedEnv, { bufferMin: 15 });
+        const rejected = await postBook(bufferedEnv, buffered.rid, {
+            token: buffered.token,
+            ...slot,
+            utcOffset: 0,
+        });
+        expect(rejected.status).toBe(409);
+        expect(rejected.json.error).toBe("slot-taken");
+        expect(bufferedStub.posts).toHaveLength(0);
+        expect((await getBookingRequest(bufferedEnv.BOOKING_REQUESTS, buffered.rid))?.status).toBe(
+            "pending",
+        );
+
+        // Control: the same back-to-back booking succeeds without a buffer.
+        const plainEnv = env();
+        stubHalo({ appointments: adjacent });
+        const plain = await mint(plainEnv);
+        const booked = await postBook(plainEnv, plain.rid, {
+            token: plain.token,
+            ...slot,
+            utcOffset: 0,
+        });
+        expect(booked.status).toBe(201);
+        expect(booked.json).toMatchObject({ appointmentId: 555, agentId: 7 });
     });
 });
 

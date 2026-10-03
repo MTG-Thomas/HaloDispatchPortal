@@ -140,6 +140,154 @@ describe("computeSlots", () => {
         expect(days[0].slots[0].start).toBe("2026-10-05T14:00:00.000Z");
     });
 
+    it("expands busy blocks by the mint-time buffer", () => {
+        const busy = [
+            {
+                agentId: 7,
+                startMs: Date.parse("2026-10-05T10:00:00.000Z"),
+                endMs: Date.parse("2026-10-05T11:00:00.000Z"),
+                allDay: false,
+            },
+        ];
+        const days = computeSlots({
+            agentIds: [7, 9],
+            busy,
+            nowMs: MONDAY,
+            utcOffsetMin: 0,
+            days: 1,
+            bufferMin: 15,
+        });
+        const starts7 = days[0].slots.filter((s) => s.agentId === 7).map((s) => s.start);
+        // Expanded block is 09:45-11:15: touching slots stay, overlapping go.
+        expect(starts7).toContain("2026-10-05T09:00:00.000Z");
+        expect(starts7).toContain("2026-10-05T09:15:00.000Z");
+        expect(starts7).not.toContain("2026-10-05T09:30:00.000Z");
+        expect(starts7).not.toContain("2026-10-05T10:00:00.000Z");
+        expect(starts7).not.toContain("2026-10-05T11:00:00.000Z");
+        expect(starts7).toContain("2026-10-05T11:15:00.000Z");
+        // Other agents are unaffected by the buffer.
+        const starts9 = days[0].slots.filter((s) => s.agentId === 9).map((s) => s.start);
+        expect(starts9).toContain("2026-10-05T10:00:00.000Z");
+    });
+
+    it("treats an explicit zero buffer like the default", () => {
+        const busy = [
+            {
+                agentId: 7,
+                startMs: Date.parse("2026-10-05T09:00:00.000Z"),
+                endMs: Date.parse("2026-10-05T10:00:00.000Z"),
+                allDay: false,
+            },
+        ];
+        for (const bufferMin of [undefined, 0] as const) {
+            const days = computeSlots({
+                agentIds: [7],
+                busy,
+                nowMs: MONDAY,
+                utcOffsetMin: 0,
+                days: 1,
+                bufferMin,
+            });
+            // Back-to-back stays bookable without a buffer.
+            expect(days[0].slots[0].start).toBe("2026-10-05T10:00:00.000Z");
+        }
+    });
+
+    it("offers nothing for an agent already at the utilization cap", () => {
+        // 08:00-16:00 is 8h of an 8h day: 16:00-17:00 looks free by overlap
+        // alone, but the shared cap (>= 100%) removes the whole day.
+        const busy = [
+            {
+                agentId: 7,
+                startMs: Date.parse("2026-10-05T08:00:00.000Z"),
+                endMs: Date.parse("2026-10-05T16:00:00.000Z"),
+                allDay: false,
+            },
+        ];
+        const days = computeSlots({
+            agentIds: [7, 9],
+            busy,
+            nowMs: MONDAY,
+            utcOffsetMin: 0,
+            days: 1,
+        });
+        expect(days).toHaveLength(1);
+        expect(days[0].slots.filter((s) => s.agentId === 7)).toHaveLength(0);
+        expect(days[0].slots.filter((s) => s.agentId === 9).length).toBeGreaterThan(0);
+    });
+
+    it("keeps days under the cap bookable", () => {
+        // 7.5h of 8h (93.75%): the 16:30 slot is still offered.
+        const busy = [
+            {
+                agentId: 7,
+                startMs: Date.parse("2026-10-05T09:00:00.000Z"),
+                endMs: Date.parse("2026-10-05T16:30:00.000Z"),
+                allDay: false,
+            },
+        ];
+        const days = computeSlots({
+            agentIds: [7],
+            busy,
+            nowMs: MONDAY,
+            utcOffsetMin: 0,
+            days: 1,
+        });
+        expect(days[0].slots.map((s) => s.start)).toContain("2026-10-05T16:30:00.000Z");
+    });
+
+    it("excludes over-capacity days even with a visible gap", () => {
+        // 07:00-12:00 + 12:00-16:00 is 9h of an 8h day (112.5%).
+        const busy = [
+            {
+                agentId: 7,
+                startMs: Date.parse("2026-10-05T07:00:00.000Z"),
+                endMs: Date.parse("2026-10-05T12:00:00.000Z"),
+                allDay: false,
+            },
+            {
+                agentId: 7,
+                startMs: Date.parse("2026-10-05T12:00:00.000Z"),
+                endMs: Date.parse("2026-10-05T16:00:00.000Z"),
+                allDay: false,
+            },
+        ];
+        const days = computeSlots({
+            agentIds: [7, 9],
+            busy,
+            nowMs: MONDAY,
+            utcOffsetMin: 0,
+            days: 1,
+        });
+        expect(days[0].slots.filter((s) => s.agentId === 7)).toHaveLength(0);
+        expect(days[0].slots.filter((s) => s.agentId === 9).length).toBeGreaterThan(0);
+    });
+
+    it("attributes capacity to the client-local day in other timezones", () => {
+        // UTC+10: local Monday 08:00-16:00 is Sun 22:00Z - Mon 06:00Z. The
+        // 8h fill the local day even though the UTC start is on Sunday.
+        const sundayEveningUtc = Date.parse("2026-10-04T14:00:00.000Z");
+        const busy = [
+            {
+                agentId: 7,
+                startMs: Date.parse("2026-10-04T22:00:00.000Z"),
+                endMs: Date.parse("2026-10-05T06:00:00.000Z"),
+                allDay: false,
+            },
+        ];
+        const days = computeSlots({
+            agentIds: [7, 9],
+            busy,
+            nowMs: sundayEveningUtc,
+            utcOffsetMin: 600,
+            days: 1,
+        });
+        expect(days).toHaveLength(1);
+        expect(days[0].date).toBe("2026-10-05");
+        expect(days[0].slots.filter((s) => s.agentId === 7)).toHaveLength(0);
+        expect(days[0].slots.filter((s) => s.agentId === 9).length).toBeGreaterThan(0);
+    });
+
     it("also enforces business hours in the dispatcher offset", () => {
         // Customer UTC+1, dispatcher UTC: local 09:00 is 08:00Z, outside
         // business hours, so the first offered slot starts at 09:00Z.
@@ -276,6 +424,34 @@ describe("validateSlot", () => {
                 ],
             }),
         ).toEqual({ ok: false, reason: "taken" });
+    });
+
+    it("rejects back-to-back slots as taken when buffered", () => {
+        // 09:00-09:30 slot, back-to-back on both sides.
+        const busyBefore = [
+            {
+                agentId: 7,
+                startMs: Date.parse("2026-10-05T08:30:00.000Z"),
+                endMs: Date.parse("2026-10-05T09:00:00.000Z"),
+                allDay: false,
+            },
+        ];
+        const busyAfter = [
+            {
+                agentId: 7,
+                startMs: Date.parse("2026-10-05T09:30:00.000Z"),
+                endMs: Date.parse("2026-10-05T10:00:00.000Z"),
+                allDay: false,
+            },
+        ];
+        for (const busy of [busyBefore, busyAfter]) {
+            expect(validateSlot({ ...good, busy })).toEqual({ ok: true });
+            expect(validateSlot({ ...good, busy, bufferMin: 0 })).toEqual({ ok: true });
+            expect(validateSlot({ ...good, busy, bufferMin: 15 })).toEqual({
+                ok: false,
+                reason: "taken",
+            });
+        }
     });
 });
 

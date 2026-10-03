@@ -17,10 +17,16 @@
  *   (`businessOffsetMin`), slots must also sit inside business hours in
  *   that offset, so a crafted customer offset cannot book 02:00
  *   business-time appointments.
+ * - A mint-time `bufferMin` expands every busy block on both sides, so
+ *   back-to-back slots next to an appointment are not offered (or booked).
+ * - An agent whose scheduled time already fills the day (shared
+ *   `dayUtilization` cap, percentage >= 100) offers nothing that day.
  */
 
 import { DEFAULT_CALENDAR_CONFIG } from "../src/lib/calendarConfig";
+import { dayUtilization } from "../src/lib/capacity";
 import { DEFAULT_WORKDAY_END, DEFAULT_WORKDAY_START } from "../src/lib/constants";
+import type { Agent, Appointment } from "../src/types";
 
 export interface SlotBusyBlock {
     agentId: number;
@@ -81,6 +87,11 @@ export interface ComputeSlotsInput {
      * or an unusable one — fall back to the 09:00-17:00 defaults.
      */
     schedules?: AgentSchedule[];
+    /**
+     * Buffer minutes around each busy block (both sides). A slot touching
+     * the expanded block is not offered. Default {@link DEFAULT_SLOT_BUFFER_MIN}.
+     */
+    bufferMin?: number;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -88,6 +99,13 @@ export const DEFAULT_SLOT_DAYS = 14;
 export const DEFAULT_SLOT_DURATION_MIN = 30;
 /** Offered durations match the dispatch duration presets. */
 export const ALLOWED_SLOT_DURATIONS = [15, 30, 45, 60] as const;
+/**
+ * Default buffer around busy blocks. Zero preserves back-to-back booking;
+ * dispatchers opt into buffers per link via the mint-time `bufferMin`.
+ */
+export const DEFAULT_SLOT_BUFFER_MIN = 0;
+/** Upper bound for mint-time `bufferMin` (at most one hour each side). */
+export const MAX_SLOT_BUFFER_MIN = 60;
 
 function parseWorkdayMinutes(value: string): number {
     const [hour, minute] = value.split(":").map(Number);
@@ -142,6 +160,96 @@ function windowForAgent(
     return fallback;
 }
 
+/** Clamp a mint-time buffer to the supported range (default 0). */
+function normalizeBufferMin(value: number | undefined): number {
+    if (value === undefined || !Number.isFinite(value)) {
+        return DEFAULT_SLOT_BUFFER_MIN;
+    }
+    return Math.min(Math.max(Math.floor(value), 0), MAX_SLOT_BUFFER_MIN);
+}
+
+/** True when the slot touches the busy block expanded by the buffer. */
+function overlapsBuffered(
+    startMs: number,
+    endMs: number,
+    block: SlotBusyBlock,
+    bufferMs: number,
+): boolean {
+    return overlaps(startMs, endMs, block.startMs - bufferMs, block.endMs + bufferMs);
+}
+
+/**
+ * Synthetic agent mirroring the slot-engine workday (Mon-Fri 09:00-17:00
+ * defaults), so the shared capacity rules judge the same working day the
+ * slots are offered in.
+ */
+function syntheticAgent(agentId: number): Agent {
+    const working = {
+        isWorking: true,
+        startTime: DEFAULT_WORKDAY_START,
+        endTime: DEFAULT_WORKDAY_END,
+    };
+    const off = {
+        isWorking: false,
+        startTime: DEFAULT_WORKDAY_START,
+        endTime: DEFAULT_WORKDAY_END,
+    };
+    return {
+        id: agentId,
+        name: `Agent ${agentId}`,
+        email: "",
+        initials: "",
+        role: "",
+        teamIds: [],
+        skills: [],
+        workingHours: {
+            monday: working,
+            tuesday: working,
+            wednesday: working,
+            thursday: working,
+            friday: working,
+            saturday: off,
+            sunday: off,
+        },
+        isActive: true,
+        color: "",
+    };
+}
+
+/**
+ * True when the agent's scheduled time already fills the client-local day
+ * (shared `dayUtilization` cap: percentage >= 100, same as
+ * `isAgentOverbooked`). Busy blocks and the day marker shift by the client
+ * offset so the UTC-day comparison inside `dayUtilization` lands on the
+ * client-local day; durations are unchanged by the shift.
+ */
+function isAgentDayFull(
+    agentId: number,
+    agentBusy: SlotBusyBlock[],
+    midnightUtc: number,
+    utcOffsetMin: number,
+): boolean {
+    const offsetMs = utcOffsetMin * 60_000;
+    const appointments: Appointment[] = agentBusy.map((block, index) => ({
+        id: `busy-${agentId}-${index}`,
+        ticketId: "1",
+        agentId,
+        startTime: new Date(block.startMs + offsetMs),
+        endTime: new Date(block.endMs + offsetMs),
+        status: "scheduled",
+        isAllDay: block.allDay,
+        isTentative: false,
+        createdAt: new Date(block.startMs + offsetMs),
+        updatedAt: new Date(block.startMs + offsetMs),
+    }));
+    const day = dayUtilization(
+        syntheticAgent(agentId),
+        appointments,
+        new Date(midnightUtc + offsetMs + 12 * 60 * 60 * 1000),
+    );
+    return day.isWorkingDay && day.percentage >= 100;
+}
+
 /**
  * True when [startMs, endMs) sits on a Mon-Fri working day fully inside the
  * working window (per-agent `window`, else the 09:00-17:00 default), measured
@@ -173,14 +281,16 @@ export function withinBusinessHours(
 /**
  * Offered slots per day (only days with at least one free slot are returned).
  * A slot is offered when it starts in the future, fits inside working hours
- * on a Mon-Fri working day, aligns to the calendar grid, and overlaps no busy
- * block for that agent. An all-day block for an agent removes their whole day.
+ * on a Mon-Fri working day, aligns to the calendar grid, and overlaps no
+ * buffer-expanded busy block for that agent. An all-day block for an agent,
+ * or a day already at the shared utilization cap, removes their whole day.
  */
 export function computeSlots(input: ComputeSlotsInput): DaySlots[] {
     const days = input.days ?? DEFAULT_SLOT_DAYS;
     const durationMin = input.durationMin ?? DEFAULT_SLOT_DURATION_MIN;
     const fallback = workdayWindowMinutes();
     const gridMin = fallback.gridMin;
+    const bufferMs = normalizeBufferMin(input.bufferMin) * 60_000;
     const out: DaySlots[] = [];
 
     for (let dayOffset = 0; dayOffset < days; dayOffset++) {
@@ -201,6 +311,9 @@ export function computeSlots(input: ComputeSlotsInput): DaySlots[] {
             ) {
                 continue;
             }
+            if (isAgentDayFull(agentId, agentBusy, midnightUtc, input.utcOffsetMin)) {
+                continue;
+            }
             for (let t = startMin; t + durationMin <= endMin; t += gridMin) {
                 const startMs = midnightUtc + t * 60_000;
                 if (startMs <= input.nowMs) {
@@ -217,7 +330,7 @@ export function computeSlots(input: ComputeSlotsInput): DaySlots[] {
                 ) {
                     continue;
                 }
-                if (agentBusy.some((b) => overlaps(startMs, endMs, b.startMs, b.endMs))) {
+                if (agentBusy.some((b) => overlapsBuffered(startMs, endMs, b, bufferMs))) {
                     continue;
                 }
                 slots.push({
@@ -257,17 +370,26 @@ export interface ValidateSlotInput {
      * or an unusable one — fall back to the 09:00-17:00 defaults.
      */
     schedules?: AgentSchedule[];
+    /**
+     * Buffer minutes around each busy block (both sides), mirroring
+     * `computeSlots`. Default {@link DEFAULT_SLOT_BUFFER_MIN}.
+     */
+    bufferMin?: number;
 }
 
 /**
  * Re-validate one chosen slot against the same rules `computeSlots` uses
  * (book-time recheck against live appointments). Duration/grid shape is
- * validated by the caller; this checks past, working hours, and overlap.
+ * validated by the caller; this checks past, working hours, and
+ * buffer-expanded overlap. The utilization cap is offering-only: the book
+ * path rechecks a partial window, so the slots-time gate stays
+ * authoritative and the single-book flow is unchanged.
  */
 export function validateSlot(input: ValidateSlotInput): SlotCheck {
     if (!(input.endMs > input.startMs) || input.startMs <= input.nowMs) {
         return { ok: false, reason: "past" };
     }
+    const bufferMs = normalizeBufferMin(input.bufferMin) * 60_000;
     const fallback = workdayWindowMinutes();
     const { startMin, endMin } = windowForAgent(input.schedules, input.agentId, fallback);
     const gridMin = fallback.gridMin;
@@ -310,7 +432,7 @@ export function validateSlot(input: ValidateSlotInput): SlotCheck {
                     localMidnight - offsetMs + DAY_MS,
                 ),
         ) ||
-        agentBusy.some((b) => overlaps(input.startMs, input.endMs, b.startMs, b.endMs))
+        agentBusy.some((b) => overlapsBuffered(input.startMs, input.endMs, b, bufferMs))
     ) {
         return { ok: false, reason: "taken" };
     }

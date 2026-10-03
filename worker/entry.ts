@@ -35,6 +35,7 @@ import {
     computeSlots,
     DEFAULT_SLOT_DAYS,
     DEFAULT_SLOT_DURATION_MIN,
+    MAX_SLOT_BUFFER_MIN,
     parseHaloDateMs,
     validateSlot,
 } from "./slots";
@@ -62,6 +63,8 @@ export interface MintRequest {
     haloTokenPair: HaloTokenPair;
     /** Dispatcher-local minutes east of UTC (optional; stored for hours checks). */
     dispatcherUtcOffset?: number;
+    /** Buffer minutes around busy blocks (optional; 0 keeps back-to-back). */
+    bufferMin?: number;
 }
 
 export type MintValidation =
@@ -118,6 +121,16 @@ export function validateMintRequest(body: unknown): MintValidation {
     ) {
         details.push("dispatcherUtcOffset must be an integer between -840 and 840");
     }
+    const bufferMin = candidate.bufferMin;
+    if (
+        bufferMin !== undefined &&
+        (typeof bufferMin !== "number" ||
+            !Number.isInteger(bufferMin) ||
+            bufferMin < 0 ||
+            bufferMin > MAX_SLOT_BUFFER_MIN)
+    ) {
+        details.push(`bufferMin must be an integer between 0 and ${MAX_SLOT_BUFFER_MIN}`);
+    }
     if (details.length > 0) {
         return { ok: false, error: "Invalid booking request", details };
     }
@@ -129,6 +142,7 @@ export function validateMintRequest(body: unknown): MintValidation {
             appointmentTypeId: candidate.appointmentTypeId as number,
             haloTokenPair: candidate.haloTokenPair as HaloTokenPair,
             ...(typeof dispatcherUtcOffset === "number" ? { dispatcherUtcOffset } : {}),
+            ...(typeof bufferMin === "number" ? { bufferMin } : {}),
         },
     };
 }
@@ -239,6 +253,9 @@ async function handleMint(request: Request, env: BookingEnv): Promise<Response> 
         exp,
         ...(validation.value.dispatcherUtcOffset !== undefined
             ? { businessOffsetMin: validation.value.dispatcherUtcOffset }
+            : {}),
+        ...(validation.value.bufferMin !== undefined
+            ? { bufferMin: validation.value.bufferMin }
             : {}),
     });
     const token = await signBookingToken(
@@ -541,6 +558,7 @@ async function handleSlots(
         durationMin,
         businessOffsetMin: context.record.businessOffsetMin,
         schedules: toAgentSchedules(directory ?? []),
+        bufferMin: context.record.bufferMin,
     });
     return json(200, {
         rid,
@@ -690,6 +708,7 @@ async function handleBook(
         endMs: parsed.value.endMs,
         businessOffsetMin: context.record.businessOffsetMin,
         schedules: toAgentSchedules(directory ?? []),
+        bufferMin: context.record.bufferMin,
     });
     if (!check.ok) {
         return check.reason === "taken"

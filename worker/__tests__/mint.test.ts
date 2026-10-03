@@ -133,6 +133,22 @@ describe("validateMintRequest", () => {
             }
         }
     });
+
+    it("accepts an optional buffer and rejects bad ones", () => {
+        for (const bufferMin of [0, 15, 60]) {
+            expect(validateMintRequest({ ...goodBody(), bufferMin })).toMatchObject({
+                ok: true,
+                value: { bufferMin },
+            });
+        }
+        for (const bufferMin of [-1, 61, 1.5, "15", Number.NaN, null]) {
+            const result = validateMintRequest({ ...goodBody(), bufferMin });
+            expect(result.ok).toBe(false);
+            if (!result.ok) {
+                expect(result.details).toContain("bufferMin must be an integer between 0 and 60");
+            }
+        }
+    });
 });
 
 describe("mint endpoint", () => {
@@ -185,6 +201,28 @@ describe("mint endpoint", () => {
         await expect(
             getBookingRequest(testEnv.BOOKING_REQUESTS, String(json.rid)),
         ).resolves.toMatchObject({ businessOffsetMin: -300 });
+    });
+
+    it("stores the buffer and omits it by default", async () => {
+        const bufferedEnv = env();
+        const buffered = await mint(bufferedEnv, { ...goodBody(), bufferMin: 15 });
+        expect(buffered.status).toBe(201);
+        await expect(
+            getBookingRequest(bufferedEnv.BOOKING_REQUESTS, String(buffered.json.rid)),
+        ).resolves.toMatchObject({ bufferMin: 15 });
+
+        const plainEnv = env();
+        const plain = await mint(plainEnv, goodBody());
+        expect(plain.status).toBe(201);
+        const record = await getBookingRequest(plainEnv.BOOKING_REQUESTS, String(plain.json.rid));
+        expect(record?.bufferMin).toBeUndefined();
+    });
+
+    it("returns 400 for an out-of-range buffer", async () => {
+        const { status, json } = await mint(env(), { ...goodBody(), bufferMin: 61 });
+        expect(status).toBe(400);
+        expect(json.error).toBe("Invalid booking request");
+        expect(json.details).toContain("bufferMin must be an integer between 0 and 60");
     });
 });
 
