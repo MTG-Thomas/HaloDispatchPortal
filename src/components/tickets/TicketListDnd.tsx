@@ -42,7 +42,13 @@ import { useRowWindowing } from "@/hooks/useRowWindowing";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { cn } from "@/lib/utils";
 import { computeSla } from "@/utils/enrich-ticket";
-import { resolvePriorityBoostMap, scoreBreakdown, scoreTicket } from "@/lib/priority-score";
+import {
+    accumulateTenantPriorityIds,
+    resolvePriorityBoostMap,
+    scoreBreakdown,
+    scoreTicket,
+    type TenantPriorityAccumulation,
+} from "@/lib/priority-score";
 import { sortBreachingNext } from "@/lib/sla-escalation";
 import { requestOverdueAlertPermission, useSlaOverdueAlerts } from "@/hooks/useSlaOverdueAlerts";
 import {
@@ -625,6 +631,7 @@ export function TicketList() {
     // opt-in via the persisted preference, toggled in the queue dialog.
     const bookingNotify = useBookingNotify({
         requests: booking.requests,
+        listLoaded: booking.loaded,
         refresh: booking.refresh,
         notifyEnabled: bookingNotifyEnabled,
     });
@@ -672,7 +679,7 @@ export function TicketList() {
         channel: BookingSendChannel,
     ) => {
         try {
-            const { oldInvalidated } = await sendBookingLink({
+            const { oldInvalidated, copied } = await sendBookingLink({
                 ticketId: summary.ticketId,
                 channel,
                 origin: window.location.origin,
@@ -680,11 +687,12 @@ export function TicketList() {
                 open: (href) => {
                     window.location.href = href;
                 },
+                copyFallback: (url) => navigator.clipboard.writeText(url),
             });
             toast.success(
                 channel === "sms"
-                    ? "Opening text message with booking link…"
-                    : "Opening email with booking link…",
+                    ? `Opening text message with booking link…${copied ? " Link also copied." : ""}`
+                    : `Opening email with booking link…${copied ? " Link also copied." : ""}`,
             );
             if (!oldInvalidated) {
                 toast.warning("The old link is still live — cancel it from the queue.");
@@ -727,13 +735,29 @@ export function TicketList() {
         });
     }, [haloTickets, searchTerm]);
 
-    // Tenant priority boost map, rebuilt when the loaded tickets change:
-    // distinct priority_ids from the already-loaded rows (ClientCache has
-    // no priority catalogue, and scoring makes no extra API calls).
+    // Stable tenant priority set: the loaded page is a slice, so deriving
+    // the boost map from each page would rescale every priority's boost on
+    // pagination or filter changes. Instead the distinct priority_ids
+    // accumulate across loads (reset on tenant change) — ClientCache has no
+    // priority catalogue, and scoring makes no extra API calls.
     // Absent/empty ids fall back to DEFAULT_PRIORITY_BOOST_MAP.
+    const tenantKey = `${config.resourceServer} ${config.tenant}`;
+    const [tenantPriorities, setTenantPriorities] = useState<TenantPriorityAccumulation>({
+        key: tenantKey,
+        ids: [],
+    });
+    useEffect(() => {
+        setTenantPriorities((prev) =>
+            accumulateTenantPriorityIds(
+                prev,
+                tenantKey,
+                haloTickets.map((ticket) => ticket.priority_id),
+            ),
+        );
+    }, [tenantKey, haloTickets]);
     const priorityBoostMap = useMemo(
-        () => resolvePriorityBoostMap(haloTickets.map((ticket) => ticket.priority_id)),
-        [haloTickets],
+        () => resolvePriorityBoostMap(tenantPriorities.ids),
+        [tenantPriorities],
     );
 
     // "Breaching next" lane takes precedence over header sorting: SLA band

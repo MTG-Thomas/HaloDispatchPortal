@@ -1,4 +1,5 @@
 import {
+    loadDispatcherSession,
     loadTokens,
     refreshToken as refreshAuthToken,
     isTokenExpiringSoon,
@@ -132,8 +133,10 @@ export async function apiRequest<T>(endpoint: string, options: RequestInit = {})
     }
 
     // Proactively refresh when tokens are expired or inside the skew window,
-    // so the request below does not fail with a preventable 401.
-    if (isTokenExpiringSoon(tokens) && tokens.refresh_token) {
+    // so the request below does not fail with a preventable 401. A vault
+    // session rotates inside the Worker even though memory holds no
+    // refresh token; without either, the request goes out as-is.
+    if (isTokenExpiringSoon(tokens) && (tokens.refresh_token || loadDispatcherSession())) {
         const refreshSuccess = await refreshSingleFlight({
             authServer: config.authServer,
             clientId: config.clientId,

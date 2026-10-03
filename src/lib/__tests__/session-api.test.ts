@@ -6,9 +6,18 @@ import {
     expireDispatcherSession,
     fetchDispatcherSession,
     refreshDispatcherSession,
+    rotateDispatcherSession,
 } from "../session-api";
 
 const PAIR = { access_token: "halo-access", refresh_token: "halo-refresh" };
+const TENANT = { authServer: "https://halo.example.com", clientId: "cid-1" };
+const CREDS = {
+    access_token: "halo-access",
+    expires_in: 3600,
+    obtained_at: 1_700_000_000_000,
+    token_type: "Bearer",
+    scope: "all:standard offline_access",
+};
 const REF = { sessionId: "sess-1", expiresAt: "2026-11-02T00:00:00.000Z" };
 
 function mockFetchOnce(status: number, body: unknown) {
@@ -30,20 +39,23 @@ describe("session-api base", () => {
 describe("createDispatcherSession", () => {
     it("POSTs the pair and returns the session ref", async () => {
         const impl = mockFetchOnce(201, REF);
-        const result = await createDispatcherSession(PAIR);
+        const result = await createDispatcherSession(PAIR, TENANT);
         expect(result).toEqual(REF);
         const [url, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
         expect(url).toBe("/api/book/sessions");
         expect(init.method).toBe("POST");
-        expect(JSON.parse(init.body as string)).toEqual({ haloTokenPair: PAIR });
+        expect(JSON.parse(init.body as string)).toEqual({ haloTokenPair: PAIR, tenant: TENANT });
     });
 
     it("keeps the server message on 400", async () => {
         mockFetchOnce(400, { error: "Invalid session request" });
-        const error = await createDispatcherSession({
-            access_token: "",
-            refresh_token: "",
-        }).catch((e: unknown) => e);
+        const error = await createDispatcherSession(
+            {
+                access_token: "",
+                refresh_token: "",
+            },
+            TENANT,
+        ).catch((e: unknown) => e);
         expect(error).toBeInstanceOf(DispatcherSessionError);
         expect((error as DispatcherSessionError).code).toBe("invalid-request");
         expect((error as DispatcherSessionError).message).toBe("Invalid session request");
@@ -51,24 +63,24 @@ describe("createDispatcherSession", () => {
 
     it("rejects malformed success bodies", async () => {
         mockFetchOnce(201, { nope: true });
-        await expect(createDispatcherSession(PAIR)).rejects.toMatchObject({
+        await expect(createDispatcherSession(PAIR, TENANT)).rejects.toMatchObject({
             code: "network-error",
         });
     });
 
     it("rejects unparseable expiry values", async () => {
         mockFetchOnce(201, { sessionId: "s", expiresAt: "not-a-date" });
-        await expect(createDispatcherSession(PAIR)).rejects.toMatchObject({
+        await expect(createDispatcherSession(PAIR, TENANT)).rejects.toMatchObject({
             code: "network-error",
         });
     });
 });
 
 describe("fetchDispatcherSession", () => {
-    it("GETs current with the session Bearer [REDACTED] returns the pair", async () => {
-        const impl = mockFetchOnce(200, { ...REF, haloTokenPair: PAIR });
+    it("GETs current with the session id and returns access credentials", async () => {
+        const impl = mockFetchOnce(200, { ...REF, haloAccessToken: CREDS });
         const result = await fetchDispatcherSession("sess-1");
-        expect(result).toEqual({ ...REF, haloTokenPair: PAIR });
+        expect(result).toEqual({ ...REF, haloAccessToken: CREDS });
         const [url, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
         expect(url).toBe("/api/book/sessions/current");
         expect((init.headers as Record<string, string>).Authorization).toBe("Bearer sess-1");
@@ -82,8 +94,15 @@ describe("fetchDispatcherSession", () => {
         expect((error as DispatcherSessionError).message).toMatch(/sign in again/i);
     });
 
-    it("rejects success bodies without a usable pair", async () => {
-        mockFetchOnce(200, { ...REF, haloTokenPair: { access_token: "a" } });
+    it("rejects success bodies without access credentials", async () => {
+        mockFetchOnce(200, { ...REF, haloAccessToken: { access_token: "" } });
+        await expect(fetchDispatcherSession("sess-1")).rejects.toMatchObject({
+            code: "network-error",
+        });
+    });
+
+    it("rejects success bodies with no credentials field", async () => {
+        mockFetchOnce(200, REF);
         await expect(fetchDispatcherSession("sess-1")).rejects.toMatchObject({
             code: "network-error",
         });
@@ -115,6 +134,39 @@ describe("refreshDispatcherSession", () => {
         mockFetchOnce(401, { error: "Unauthorized" });
         await expect(refreshDispatcherSession("dead")).rejects.toMatchObject({
             code: "unauthorized",
+        });
+    });
+});
+
+describe("rotateDispatcherSession", () => {
+    it("POSTs rotate and returns fresh access credentials", async () => {
+        const impl = mockFetchOnce(200, { ...REF, haloAccessToken: CREDS });
+        const result = await rotateDispatcherSession("sess-1");
+        expect(result).toEqual({ ...REF, haloAccessToken: CREDS });
+        const [url, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
+        expect(url).toBe("/api/book/sessions/refresh");
+        expect(init.method).toBe("POST");
+        expect(JSON.parse(init.body as string)).toEqual({ rotate: true });
+    });
+
+    it("maps 401 to unauthorized", async () => {
+        mockFetchOnce(401, { error: "Unauthorized" });
+        await expect(rotateDispatcherSession("dead")).rejects.toMatchObject({
+            code: "unauthorized",
+        });
+    });
+
+    it("maps 502 to network-error and keeps the session", async () => {
+        mockFetchOnce(502, { error: "halo-unavailable" });
+        const error = await rotateDispatcherSession("sess-1").catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(DispatcherSessionError);
+        expect((error as DispatcherSessionError).code).toBe("network-error");
+    });
+
+    it("rejects success bodies without credentials", async () => {
+        mockFetchOnce(200, REF);
+        await expect(rotateDispatcherSession("sess-1")).rejects.toMatchObject({
+            code: "network-error",
         });
     });
 });
@@ -156,11 +208,14 @@ describe("transport failures", () => {
                 throw new TypeError("fetch failed");
             }),
         );
-        await expect(createDispatcherSession(PAIR)).rejects.toMatchObject({
+        await expect(createDispatcherSession(PAIR, TENANT)).rejects.toMatchObject({
             code: "network-error",
         });
         await expect(fetchDispatcherSession("s")).rejects.toMatchObject({ code: "network-error" });
         await expect(refreshDispatcherSession("s")).rejects.toMatchObject({
+            code: "network-error",
+        });
+        await expect(rotateDispatcherSession("s")).rejects.toMatchObject({
             code: "network-error",
         });
     });
@@ -172,12 +227,14 @@ describe("transport failures", () => {
                 throw new DOMException("aborted", "AbortError");
             }),
         );
-        await expect(createDispatcherSession(PAIR)).rejects.toMatchObject({ name: "AbortError" });
+        await expect(createDispatcherSession(PAIR, TENANT)).rejects.toMatchObject({
+            name: "AbortError",
+        });
     });
 
     it("maps 429 to network-error with a retry message", async () => {
         mockFetchOnce(429, { error: "rate-limited" });
-        const error = await createDispatcherSession(PAIR).catch((e: unknown) => e);
+        const error = await createDispatcherSession(PAIR, TENANT).catch((e: unknown) => e);
         expect((error as DispatcherSessionError).code).toBe("network-error");
         expect((error as DispatcherSessionError).message).toMatch(/too many requests/i);
     });

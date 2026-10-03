@@ -1,14 +1,19 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import {
+    BOOKING_REQUEST_TTL_SECONDS,
     BookingStateError,
+    appendAuditEvent,
+    bookingAuditKey,
     bookingRequestKey,
     createBookingRequest,
+    extendBookingExpiry,
     getBookingRequest,
     listBookingRequests,
     markBookingBooked,
     markBookingClicked,
     openTokenPair,
+    recordTtlSeconds,
     sealTokenPair,
     setBookingStatus,
     updateSealedTokens,
@@ -232,6 +237,69 @@ describe("listBookingRequests", () => {
         };
         const records = await listBookingRequests(paging);
         expect(records.map((r) => r.rid).sort()).toEqual(["rid-p1", "rid-p2", "rid-p3"]);
+    });
+});
+
+describe("record-derived KV TTLs", () => {
+    function recordingKv() {
+        const kv = fakeKv();
+        const ttls = new Map<string, number | undefined>();
+        const recording: KeyValueClient = {
+            ...kv,
+            put: async (key: string, value: string, options?: { expirationTtl?: number }) => {
+                ttls.set(key, options?.expirationTtl);
+                await kv.put(key, value, options);
+            },
+        };
+        return { kv: recording, ttls };
+    }
+
+    async function seed(kv: KeyValueClient, exp: number) {
+        return createBookingRequest(kv, {
+            rid: "rid-ttl",
+            ticketId: 42,
+            agentIds: [7],
+            appointmentTypeId: 3,
+            sealedTokens: await sealTokenPair(pair(), SECRET),
+            exp,
+        });
+    }
+
+    it("covers the record expiry plus a grace day, floored at one link TTL", () => {
+        const nowSec = 1_790_000_000;
+        expect(recordTtlSeconds(nowSec + 7 * 24 * 3600, nowSec)).toBe(
+            BOOKING_REQUEST_TTL_SECONDS + 24 * 3600,
+        );
+        expect(recordTtlSeconds(nowSec + 30 * 24 * 3600, nowSec)).toBe(31 * 24 * 3600);
+        expect(recordTtlSeconds(nowSec - 100, nowSec)).toBe(BOOKING_REQUEST_TTL_SECONDS);
+    });
+
+    it("keeps extended records stored through their renewed expiry", async () => {
+        const { kv, ttls } = recordingKv();
+        const nowSec = Math.floor(Date.now() / 1000);
+        await seed(kv, nowSec + 7 * 24 * 3600);
+        const renewed = await extendBookingExpiry(kv, "rid-ttl", nowSec + 30 * 24 * 3600);
+        expect(renewed.exp).toBe(nowSec + 30 * 24 * 3600);
+        expect(ttls.get(bookingRequestKey("rid-ttl"))).toBeGreaterThan(30 * 24 * 3600);
+        // Later writes keep the same coverage instead of resetting to 7d.
+        await updateSealedTokens(kv, "rid-ttl", renewed.sealedTokens);
+        await markBookingClicked(kv, "rid-ttl");
+        await setBookingStatus(kv, "rid-ttl", "cancelled");
+        expect(ttls.get(bookingRequestKey("rid-ttl"))).toBeGreaterThan(30 * 24 * 3600);
+    });
+
+    it("writes the audit trail with the record's TTL", async () => {
+        const { kv, ttls } = recordingKv();
+        const nowSec = Math.floor(Date.now() / 1000);
+        await seed(kv, nowSec + 30 * 24 * 3600);
+        await appendAuditEvent(kv, "rid-ttl", "view");
+        expect(ttls.get(bookingAuditKey("rid-ttl"))).toBeGreaterThan(30 * 24 * 3600);
+    });
+
+    it("falls back to one link TTL when the record is unreadable", async () => {
+        const { kv, ttls } = recordingKv();
+        await appendAuditEvent(kv, "rid-missing", "view");
+        expect(ttls.get(bookingAuditKey("rid-missing"))).toBe(BOOKING_REQUEST_TTL_SECONDS);
     });
 });
 

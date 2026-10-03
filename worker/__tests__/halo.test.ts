@@ -111,6 +111,30 @@ describe("Halo client", () => {
         expect(body.get("refresh_token")).toBe("refresh-xyz");
     });
 
+    it("rotates pairs without a resource server but refuses resource calls", async () => {
+        const fetchImpl: FetchImpl = vi.fn(async () =>
+            Response.json({ access_token: "new-access", expires_in: 3600 }),
+        );
+        const client = createHaloClient({
+            fetchImpl,
+            authServer: "https://auth.halopsa.com",
+            clientId: "client-1",
+        });
+        await expect(
+            client.refreshTokenPair({ access_token: "old", refresh_token: "refresh" }),
+        ).resolves.toMatchObject({ access_token: "new-access", refresh_token: "refresh" });
+        await expect(client.getTicket("new-access", 42)).rejects.toMatchObject({
+            status: 500,
+        });
+        await expect(
+            client.getAppointments("new-access", {
+                startDate: "2026-10-05",
+                endDate: "2026-10-06",
+                agentIds: [7],
+            }),
+        ).rejects.toBeInstanceOf(HaloApiError);
+    });
+
     it("throws HaloApiError on refresh failures", async () => {
         const client = createHaloClient({
             fetchImpl: async () => new Response("bad", { status: 400 }),

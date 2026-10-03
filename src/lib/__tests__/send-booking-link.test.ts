@@ -70,6 +70,23 @@ describe("deep-link hrefs", () => {
         expect(params.get("body")).toBe("a&b");
     });
 
+    it("mailto uses URI encoding (spaces as %20, never form +)", () => {
+        const href = buildMailtoHref({
+            to: "user@example.com",
+            subject: "Book your appointment",
+            body: "pick a time",
+        });
+        const query = href.slice(href.indexOf("?") + 1);
+        expect(query).toContain("subject=Book%20your%20appointment");
+        expect(query).toContain("body=pick%20a%20time");
+        expect(query).not.toContain("+");
+    });
+
+    it("mailto encodes line breaks as CRLF", () => {
+        const href = buildMailtoHref({ to: "u@x.com", subject: "s", body: "line one\nline two" });
+        expect(href).toContain("body=line%20one%0D%0Aline%20two");
+    });
+
     it("mailto stays valid without a recipient", () => {
         const href = buildMailtoHref({ subject: "s", body: "b" });
         expect(href.startsWith("mailto:?")).toBe(true);
@@ -81,6 +98,12 @@ describe("deep-link hrefs", () => {
         expect(new URLSearchParams(href.slice(href.indexOf("?") + 1)).get("body")).toBe(
             "hi there & co",
         );
+    });
+
+    it("sms uses URI encoding (spaces as %20, never form +)", () => {
+        const href = buildSmsHref({ to: "+15551234567", body: "hi there" });
+        const query = href.slice(href.indexOf("?") + 1);
+        expect(query).toBe("body=hi%20there");
     });
 });
 
@@ -141,11 +164,49 @@ describe("sendBookingLink", () => {
             open,
         });
         expect(mintFresh).toHaveBeenCalledOnce();
-        expect(result).toEqual({ token: "FRESH", oldInvalidated: true });
+        expect(result).toEqual({
+            token: "FRESH",
+            oldInvalidated: true,
+            url: "https://app.example/book/FRESH",
+            copied: false,
+        });
         expect(open).toHaveBeenCalledOnce();
         const href = open.mock.calls[0][0] as string;
         expect(href.startsWith("mailto:")).toBe(true);
         expect(decodeURIComponent(href)).toContain("https://app.example/book/FRESH");
+    });
+
+    it("hands the fresh URL to copyFallback so the link survives a dead deep link", async () => {
+        const mintFresh = vi.fn(async () => ({ token: "FRESH", oldInvalidated: true }));
+        const copyFallback = vi.fn(async () => undefined);
+        const result = await sendBookingLink({
+            ticketId: 123,
+            channel: "sms",
+            origin: "https://app.example",
+            mintFresh,
+            open: vi.fn(),
+            copyFallback,
+        });
+        expect(copyFallback).toHaveBeenCalledOnce();
+        expect(copyFallback).toHaveBeenCalledWith("https://app.example/book/FRESH");
+        expect(result.copied).toBe(true);
+        expect(result.url).toBe("https://app.example/book/FRESH");
+    });
+
+    it("swallows copyFallback failures and still resolves the URL", async () => {
+        const mintFresh = vi.fn(async () => ({ token: "FRESH", oldInvalidated: true }));
+        const result = await sendBookingLink({
+            ticketId: 123,
+            channel: "sms",
+            origin: "https://app.example",
+            mintFresh,
+            open: vi.fn(),
+            copyFallback: vi.fn(async () => {
+                throw new Error("clipboard denied");
+            }),
+        });
+        expect(result.copied).toBe(false);
+        expect(result.url).toBe("https://app.example/book/FRESH");
     });
 
     it("propagates mint failures without opening anything", async () => {

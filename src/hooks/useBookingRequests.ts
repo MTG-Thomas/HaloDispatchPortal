@@ -26,6 +26,8 @@ export interface BookingTracker {
     error: string | null;
     /** Rid of the request currently being cancelled/resent, if any. */
     busyRid: string | null;
+    /** True once the first list load completes (successfully). */
+    loaded: boolean;
     refresh: () => Promise<void>;
     /**
      * Cancel an open request. A cancel that races to terminal resolves with
@@ -59,7 +61,15 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [busyRid, setBusyRid] = useState<string | null>(null);
+    const [loaded, setLoaded] = useState(false);
     const mountedRef = useRef(true);
+    // Synchronous mirror of `requests` for async actions (extend) that must
+    // read the current row outside a state updater. Updated in an effect so
+    // render stays pure; actions always see the last committed list.
+    const requestsRef = useRef<BookingRequestSummary[]>([]);
+    useEffect(() => {
+        requestsRef.current = requests;
+    }, [requests]);
     useEffect(() => {
         mountedRef.current = true;
         return () => {
@@ -78,6 +88,7 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
             const rows = await fetchBookingRequests(session.sessionId);
             if (mountedRef.current) {
                 setRequests(rows);
+                setLoaded(true);
             }
         } catch (err) {
             if (mountedRef.current) {
@@ -194,7 +205,7 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
         try {
             const renewed = await extendBookingRequest({
                 rid,
-                accessToken: session.sessionId,
+                sessionId: session.sessionId,
                 ...(days === undefined ? {} : { days }),
             }).catch((err: unknown) => {
                 // Raced to terminal elsewhere: adopt the current state.
@@ -212,23 +223,19 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
             });
             const exp = Math.floor(Date.parse(renewed.expiresAt) / 1000);
             const updatedAt = new Date().toISOString();
-            let summary: BookingRequestSummary | null = null;
-            if (mountedRef.current) {
-                setRequests((rows) =>
-                    rows.map((row) => {
-                        if (row.rid !== rid) {
-                            return row;
-                        }
-                        summary = { ...row, exp, updatedAt };
-                        return summary;
-                    }),
-                );
-            }
-            if (!summary) {
+            // Read the current row from the committed mirror: updater
+            // functions may run deferred (or twice in StrictMode), so the
+            // result must never be assigned as an updater side effect.
+            const current = requestsRef.current.find((row) => row.rid === rid);
+            if (!current) {
                 throw new BookingTrackerError(
                     "not-found",
                     "Booking request is no longer in the list.",
                 );
+            }
+            const summary: BookingRequestSummary = { ...current, exp, updatedAt };
+            if (mountedRef.current) {
+                setRequests((rows) => rows.map((row) => (row.rid === rid ? summary : row)));
             }
             return { summary, token: renewed.token, oldInvalidated: true };
         } finally {
@@ -262,6 +269,7 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
         loading,
         error,
         busyRid,
+        loaded,
         refresh,
         cancel,
         resend,

@@ -59,6 +59,27 @@ describe("sortBreachingNext", () => {
         expect(sortBreachingNext([b, a], NOW).map((t) => t.id)).toEqual([14, 15]);
     });
 
+    it("ranks earlier deadlines before higher dispatch scores within a band", () => {
+        // Both warning-band; the P1 due in 90 minutes outscores the P4 due
+        // in 5 minutes, but the next breach still ranks first.
+        const highScore = ticket({ id: 16, priority_id: 1, fixbydate: "2026-10-03T13:30:00.000Z" });
+        const imminent = ticket({ id: 17, priority_id: 4, fixbydate: "2026-10-03T12:05:00.000Z" });
+        expect(sortBreachingNext([highScore, imminent], NOW).map((t) => t.id)).toEqual([17, 16]);
+    });
+
+    it("breaks matching missing dates by score, then id (no NaN skip)", () => {
+        // Both dateless: score breaks the tie even though neither side has
+        // a fix-by timestamp to subtract.
+        const lowScore = ticket({ id: 18, priority_id: 4, fixbydate: null });
+        const highScore = ticket({ id: 19, priority_id: 1, fixbydate: null });
+        expect(sortBreachingNext([lowScore, highScore], NOW).map((t) => t.id)).toEqual([19, 18]);
+
+        // Fully identical dateless tickets fall through to the id tiebreak.
+        const b = ticket({ id: 31, fixbydate: null });
+        const a = ticket({ id: 30, fixbydate: null });
+        expect(sortBreachingNext([b, a], NOW).map((t) => t.id)).toEqual([30, 31]);
+    });
+
     it("treats excluded and dateless tickets as ok-band and does not mutate input", () => {
         const excluded = ticket({ id: 20, excludefromsla: true });
         const dateless = ticket({ id: 21, fixbydate: null });

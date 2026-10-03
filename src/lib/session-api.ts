@@ -4,16 +4,18 @@
  * BFF on one host. Uses bare `fetch` (never the authenticated api-client).
  *
  * The vault holds the dispatcher's Halo pair sealed in KV; the SPA persists
- * only the opaque session id. `fetchDispatcherSession` ("use") hands the
- * pair back transiently so the SPA can repopulate its memory-only tokens
- * after a reload — the pair must never be written to storage.
+ * only the opaque session id. `fetchDispatcherSession` ("use") hands
+ * access-only credentials back transiently so the SPA can repopulate its
+ * memory-only tokens after a reload — the refresh token never leaves the
+ * vault, and nothing token-shaped is ever written to storage. Rotation
+ * goes through `rotateDispatcherSession`, which reseals inside the Worker.
  */
 
 import { BOOK_API_BASE } from "./book-api";
 
 export const SESSION_API_BASE = `${BOOK_API_BASE}/sessions`;
 
-/** Pair fields the vault round-trips (mirrors the Worker's HaloTokenPair). */
+/** Full pair fields, sent once when a session is created (login vaulting). */
 export interface VaultTokenPair {
     access_token: string;
     refresh_token: string;
@@ -23,13 +25,32 @@ export interface VaultTokenPair {
     obtained_at?: number;
 }
 
+/** Access-only credentials the vault hands back (never a refresh token). */
+export interface VaultAccessCredentials {
+    access_token: string;
+    expires_in?: number;
+    obtained_at?: number;
+    token_type?: string;
+    scope?: string;
+}
+
+/** Non-secret Halo tenant endpoints stored for Worker-side rotation. */
+export interface SessionTenantEndpoints {
+    authServer: string;
+    clientId: string;
+}
+
 export interface DispatcherSessionRef {
     sessionId: string;
     expiresAt: string;
 }
 
 export interface DispatcherSessionUse extends DispatcherSessionRef {
-    haloTokenPair: VaultTokenPair;
+    haloAccessToken: VaultAccessCredentials;
+}
+
+export interface DispatcherSessionRotated extends DispatcherSessionRef {
+    haloAccessToken: VaultAccessCredentials;
 }
 
 export type DispatcherSessionErrorCode = "unauthorized" | "invalid-request" | "network-error";
@@ -64,19 +85,27 @@ function parseSessionRef(body: unknown): DispatcherSessionRef | null {
     return { sessionId: body.sessionId, expiresAt: body.expiresAt };
 }
 
-function parseVaultPair(body: unknown): VaultTokenPair | null {
+function parseAccessCredentials(body: unknown): VaultAccessCredentials | null {
     if (!isRecord(body)) {
         return null;
     }
-    if (
-        typeof body.access_token !== "string" ||
-        !body.access_token ||
-        typeof body.refresh_token !== "string" ||
-        !body.refresh_token
-    ) {
+    if (typeof body.access_token !== "string" || !body.access_token) {
         return null;
     }
-    return body as unknown as VaultTokenPair;
+    const creds: VaultAccessCredentials = { access_token: body.access_token };
+    if (typeof body.expires_in === "number") {
+        creds.expires_in = body.expires_in;
+    }
+    if (typeof body.obtained_at === "number") {
+        creds.obtained_at = body.obtained_at;
+    }
+    if (typeof body.token_type === "string") {
+        creds.token_type = body.token_type;
+    }
+    if (typeof body.scope === "string") {
+        creds.scope = body.scope;
+    }
+    return creds;
 }
 
 async function throwSessionForResponse(response: Response): Promise<never> {
@@ -149,15 +178,20 @@ function invalidResponse(): DispatcherSessionError {
     );
 }
 
-/** Create a vault session from a fresh Halo pair (login). */
+/**
+ * Create a vault session from a fresh Halo pair (login). The tenant
+ * endpoints are stored for Worker-side rotation; the pair itself is
+ * sealed and never handed back.
+ */
 export async function createDispatcherSession(
     haloTokenPair: VaultTokenPair,
+    tenant: SessionTenantEndpoints,
     options: SessionFetchOptions = {},
 ): Promise<DispatcherSessionRef> {
     const response = await sessionFetch(SESSION_API_BASE, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ haloTokenPair }),
+        body: JSON.stringify({ haloTokenPair, tenant }),
         signal: options.signal,
     });
     const ref = parseSessionRef((await response.json()) as unknown);
@@ -168,8 +202,8 @@ export async function createDispatcherSession(
 }
 
 /**
- * Use a vault session: validate the id and read the sealed pair back for
- * memory restore. Pair is transient — never persist it.
+ * Use a vault session: validate the id and read access-only credentials
+ * back for memory restore. Transient — never persist it.
  */
 export async function fetchDispatcherSession(
     sessionId: string,
@@ -181,16 +215,44 @@ export async function fetchDispatcherSession(
     });
     const body = (await response.json()) as unknown;
     const ref = parseSessionRef(body);
-    const pair = isRecord(body) ? parseVaultPair(body.haloTokenPair) : null;
-    if (!ref || !pair) {
+    const creds = isRecord(body) ? parseAccessCredentials(body.haloAccessToken) : null;
+    if (!ref || !creds) {
         throw invalidResponse();
     }
-    return { ...ref, haloTokenPair: pair };
+    return { ...ref, haloAccessToken: creds };
+}
+
+/**
+ * Rotate a vault session's sealed pair inside the Worker and adopt the
+ * fresh access-only credentials. 401 means the session is dead (or a
+ * legacy session without tenant endpoints): re-login. 502 keeps the
+ * session for a later retry.
+ */
+export async function rotateDispatcherSession(
+    sessionId: string,
+    options: SessionFetchOptions = {},
+): Promise<DispatcherSessionRotated> {
+    const response = await sessionFetch(`${SESSION_API_BASE}/refresh`, {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${sessionId}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ rotate: true }),
+        signal: options.signal,
+    });
+    const body = (await response.json()) as unknown;
+    const ref = parseSessionRef(body);
+    const creds = isRecord(body) ? parseAccessCredentials(body.haloAccessToken) : null;
+    if (!ref || !creds) {
+        throw invalidResponse();
+    }
+    return { ...ref, haloAccessToken: creds };
 }
 
 /**
  * Refresh a vault session: extend TTL, resealing `haloTokenPair` when the
- * SPA hands a rotated pair. A bare call only extends.
+ * caller hands a rotated pair (legacy). A bare call only extends.
  */
 export async function refreshDispatcherSession(
     sessionId: string,

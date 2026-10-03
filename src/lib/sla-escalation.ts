@@ -40,8 +40,10 @@ function fixByTime(value: string | null | undefined): number {
 
 /**
  * "Breaching next" order: SLA band (overdue/warning/ok/on-hold) first, then
- * dispatch score descending, then earliest fix-by date, then id for
- * determinism. Does not mutate the input.
+ * earliest fix-by date (the next breach ranks first regardless of score),
+ * then dispatch score descending to break deadline ties, then id for
+ * determinism. Tickets without a valid fix-by date sort after dated ones
+ * within their band. Does not mutate the input.
  */
 export function sortBreachingNext<T extends EscalationTicket>(
     tickets: T[],
@@ -52,11 +54,15 @@ export function sortBreachingNext<T extends EscalationTicket>(
         const rankA = slaRank(computeSla(a.fixbydate, a.excludefromsla, a.onhold, now).slaState);
         const rankB = slaRank(computeSla(b.fixbydate, b.excludefromsla, b.onhold, now).slaState);
         if (rankA !== rankB) return rankA - rankB;
+        // Compare without subtraction: missing/invalid dates are +Infinity
+        // on both sides, and Infinity - Infinity is NaN (never === 0), which
+        // would skip the score and id tie-breaks below.
+        const timeA = fixByTime(a.fixbydate);
+        const timeB = fixByTime(b.fixbydate);
+        if (timeA !== timeB) return timeA < timeB ? -1 : 1;
         const scoreDiff =
             scoreTicket(b, now, priorityBoostMap) - scoreTicket(a, now, priorityBoostMap);
         if (scoreDiff !== 0) return scoreDiff;
-        const dateDiff = fixByTime(a.fixbydate) - fixByTime(b.fixbydate);
-        if (dateDiff !== 0) return dateDiff;
         return a.id - b.id;
     });
 }

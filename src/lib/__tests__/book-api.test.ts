@@ -374,7 +374,7 @@ describe("dispatcher tracking", () => {
             const impl = mockFetchOnce(200, renewed);
             const result = await extendBookingRequest({
                 rid: "rid-1",
-                accessToken: SESSION,
+                sessionId: SESSION,
                 days: 14,
             });
             expect(result).toEqual(renewed);
@@ -387,7 +387,7 @@ describe("dispatcher tracking", () => {
 
         it("sends an empty body when days is omitted", async () => {
             const impl = mockFetchOnce(200, renewed);
-            await extendBookingRequest({ rid: "rid-1", accessToken: SESSION });
+            await extendBookingRequest({ rid: "rid-1", sessionId: SESSION });
             const [, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
             expect(JSON.parse(init.body as string)).toEqual({});
         });
@@ -397,7 +397,7 @@ describe("dispatcher tracking", () => {
             mockFetchOnce(409, { error: "Booking request is already final", ...terminal });
             const error = await extendBookingRequest({
                 rid: "rid-1",
-                accessToken: SESSION,
+                sessionId: SESSION,
             }).catch((e: unknown) => e);
             expect(error).toBeInstanceOf(BookingTrackerError);
             expect((error as BookingTrackerError).code).toBe("conflict");
@@ -407,16 +407,16 @@ describe("dispatcher tracking", () => {
         it("maps 401, 404, and 400", async () => {
             mockFetchOnce(401, { error: "Unauthorized" });
             await expect(
-                extendBookingRequest({ rid: "rid-1", accessToken: "stale" }),
+                extendBookingRequest({ rid: "rid-1", sessionId: "stale" }),
             ).rejects.toMatchObject({ code: "unauthorized" });
             mockFetchOnce(404, { error: "Booking request not found" });
             await expect(
-                extendBookingRequest({ rid: "rid-x", accessToken: SESSION }),
+                extendBookingRequest({ rid: "rid-x", sessionId: SESSION }),
             ).rejects.toMatchObject({ code: "not-found" });
             mockFetchOnce(400, { error: "Invalid extend request" });
             const error = await extendBookingRequest({
                 rid: "rid-1",
-                accessToken: SESSION,
+                sessionId: SESSION,
                 days: 99,
             }).catch((e: unknown) => e);
             expect(error).toBeInstanceOf(BookingTrackerError);
@@ -426,7 +426,7 @@ describe("dispatcher tracking", () => {
         it("rejects malformed success bodies", async () => {
             mockFetchOnce(200, { rid: "rid-1" });
             await expect(
-                extendBookingRequest({ rid: "rid-1", accessToken: SESSION }),
+                extendBookingRequest({ rid: "rid-1", sessionId: SESSION }),
             ).rejects.toMatchObject({ code: "network-error" });
         });
     });

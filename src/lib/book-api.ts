@@ -668,12 +668,12 @@ function parseAuditTrail(rid: string, body: unknown): BookingAuditTrail | null {
 /** Read one request's audit trail (view count plus the event list). */
 export async function fetchBookingAudit(
     rid: string,
-    accessToken: string,
+    sessionId: string,
     options: TrackerFetchOptions = {},
 ): Promise<BookingAuditTrail> {
     const response = await dispatcherFetch(
         `${BOOK_API_BASE}/requests/${encodeURIComponent(rid)}/audit`,
-        accessToken,
+        sessionId,
         { signal: options.signal },
     );
     const trail = parseAuditTrail(rid, (await response.json()) as unknown);
@@ -688,7 +688,7 @@ export async function fetchBookingAudit(
 
 export interface ExtendBookingArgs {
     rid: string;
-    accessToken: string;
+    sessionId: string;
     /** Fresh TTL in days (1-30); the Worker defaults an omitted value to 7. */
     days?: number;
     signal?: AbortSignal;
@@ -709,7 +709,7 @@ export interface ExtendBookingResult {
 export async function extendBookingRequest(args: ExtendBookingArgs): Promise<ExtendBookingResult> {
     const response = await dispatcherFetch(
         `${BOOK_API_BASE}/requests/${encodeURIComponent(args.rid)}/extend`,
-        args.accessToken,
+        args.sessionId,
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },

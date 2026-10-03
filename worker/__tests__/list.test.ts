@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import worker, { type BookingEnv } from "../entry";
 import { createBookingRequest, sealTokenPair, type HaloTokenPair } from "../kv";
 import { resetRateLimitsForTests } from "../ratelimit";
-import { createDispatcherSession } from "../session";
+import { createDispatcherSession, deleteDispatcherSession } from "../session";
 import { fakeKv } from "./fake-kv";
 
 beforeEach(() => {
@@ -126,6 +126,22 @@ describe("dispatcher list endpoint", () => {
         const testEnv = env();
         await seed(testEnv, "rid-a1", PAIR_A, 42);
         const { status, json } = await list(testEnv, "dead-session-id");
+        expect(status).toBe(200);
+        expect(json).toEqual({ requests: [] });
+    });
+
+    it("drops session-bound rows once the session is deleted", async () => {
+        const testEnv = env();
+        const session = await createDispatcherSession(testEnv.BOOKING_REQUESTS, PAIR_A, SECRET);
+        await seed(testEnv, "rid-mine", PAIR_A, 42, { sessionId: session.sessionId });
+
+        const before = await list(testEnv, session.sessionId);
+        expect((before.json.requests as Record<string, unknown>[]).map((row) => row.rid)).toEqual([
+            "rid-mine",
+        ]);
+
+        await deleteDispatcherSession(testEnv.BOOKING_REQUESTS, session.sessionId);
+        const { status, json } = await list(testEnv, session.sessionId);
         expect(status).toBe(200);
         expect(json).toEqual({ requests: [] });
     });

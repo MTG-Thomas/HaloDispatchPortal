@@ -56,18 +56,27 @@ export function buildBookingSmsBody(details: BookingLinkDetails): string {
     );
 }
 
+/**
+ * Compose-link encoding: URI encoding (spaces as `%20`), never the
+ * `application/x-www-form-urlencoded` that URLSearchParams emits (spaces as
+ * `+`, which mail/SMS apps render literally).
+ */
+function encodeComposeParam(value: string): string {
+    return encodeURIComponent(value);
+}
+
 export function buildMailtoHref(args: {
     to?: string | null;
     subject: string;
     body: string;
 }): string {
-    const params = new URLSearchParams({ subject: args.subject, body: args.body });
-    return `mailto:${args.to ?? ""}?${params}`;
+    // RFC 6068: mailto line breaks are CRLF (%0D%0A).
+    const body = encodeComposeParam(args.body).replace(/%0A/gi, "%0D%0A");
+    return `mailto:${args.to ?? ""}?subject=${encodeComposeParam(args.subject)}&body=${body}`;
 }
 
 export function buildSmsHref(args: { to?: string | null; body: string }): string {
-    const params = new URLSearchParams({ body: args.body });
-    return `sms:${args.to ?? ""}?${params}`;
+    return `sms:${args.to ?? ""}?body=${encodeComposeParam(args.body)}`;
 }
 
 /**
@@ -133,24 +142,51 @@ export interface SendBookingLinkArgs {
     mintFresh: () => Promise<FreshBookingLink>;
     /** Deep-link opener (window.location assignment in the UI). */
     open: (href: string) => void;
+    /**
+     * Fresh-link fallback: handed the absolute booking URL after the deep
+     * link opens (clipboard copy in the UI), so the dispatcher keeps the
+     * new link when no compose application handles the deep link.
+     * Failures are swallowed — the deep link remains the primary path.
+     */
+    copyFallback?: (url: string) => Promise<unknown>;
+}
+
+export interface SendBookingLinkResult extends FreshBookingLink {
+    /** Absolute `/book/<token>` URL for the freshly minted link. */
+    url: string;
+    /** True when the copyFallback handoff resolved. */
+    copied: boolean;
 }
 
 /**
  * Send orchestration: mint a fresh link (the stored summary carries only the
  * rid, never the token, so sends are always resend-as-new), resolve the deep
- * link, and open it. Throws when minting fails; callers toast the outcome.
+ * link, open it, and hand the URL to copyFallback when provided. Throws
+ * when minting fails; callers toast the outcome.
  */
-export async function sendBookingLink(args: SendBookingLinkArgs): Promise<FreshBookingLink> {
+export async function sendBookingLink(args: SendBookingLinkArgs): Promise<SendBookingLinkResult> {
     const fresh = await args.mintFresh();
+    const url = buildBookingUrl(args.origin, fresh.token);
     const target = resolveBookingSendTarget({
         details: {
             ticketId: args.ticketId,
-            url: buildBookingUrl(args.origin, fresh.token),
+            url,
             expiresAt: args.expiresAt,
         },
         contact: args.contact,
         preferred: args.channel,
     });
     args.open(target.href);
-    return fresh;
+    let copied = false;
+    if (args.copyFallback) {
+        try {
+            await args.copyFallback(url);
+            copied = true;
+        } catch {
+            // Clipboard (or any fallback) is best-effort: the compose
+            // window is the primary path, and the returned url lets the
+            // caller offer its own fallback UI.
+        }
+    }
+    return { ...fresh, url, copied };
 }

@@ -12,6 +12,12 @@ export type NotifyPermission = NotificationPermission | "unsupported";
 export interface UseBookingNotifyOptions {
     /** Live list snapshot from the booking tracker. */
     requests: BookingRequestSummary[];
+    /**
+     * True once the tracker's first list load completes. Required: the
+     * pre-load `[]` must not seed the baseline, or the first fetched rows
+     * would all report as new activity.
+     */
+    listLoaded: boolean;
     /** Tracker refresh; polled on the visibility-aware interval. */
     refresh: () => Promise<unknown>;
     /** False disables polling (diffing still tracks manual refreshes). */
@@ -65,6 +71,7 @@ function fireBrowserNotification(ticketId: number, kind: "viewed" | "booked", ri
 export function useBookingNotify(options: UseBookingNotifyOptions): BookingNotify {
     const {
         requests,
+        listLoaded,
         refresh,
         enabled = true,
         pollIntervalMs = BOOKING_NOTIFY_POLL_MS,
@@ -74,10 +81,17 @@ export function useBookingNotify(options: UseBookingNotifyOptions): BookingNotif
     const [notifyPermission, setNotifyPermission] = useState<NotifyPermission>(currentPermission);
     const baselineRef = useRef<Map<string, BookingRequestSummary> | null>(null);
     const refreshRef = useRef(refresh);
-    refreshRef.current = refresh;
     const notifyRef = useRef(notifyEnabled);
-    notifyRef.current = notifyEnabled;
     const inFlightRef = useRef(false);
+
+    // Latest callbacks for polling and the notification gate, committed via
+    // effects — render-time ref writes could leak from discarded renders.
+    useEffect(() => {
+        refreshRef.current = refresh;
+    }, [refresh]);
+    useEffect(() => {
+        notifyRef.current = notifyEnabled;
+    }, [notifyEnabled]);
 
     const poll = useCallback(() => {
         if (typeof document !== "undefined" && document.hidden) {
@@ -116,10 +130,15 @@ export function useBookingNotify(options: UseBookingNotifyOptions): BookingNotif
     }, [enabled, pollIntervalMs, poll]);
 
     useEffect(() => {
+        if (!listLoaded) {
+            // The pre-load `[]` is not a snapshot: seeding it would report
+            // the first fetched rows as new activity.
+            return;
+        }
         const baseline = baselineRef.current;
         if (baseline === null) {
-            // First snapshot seeds the baseline: pre-existing activity is
-            // history, not news — only later transitions become unread.
+            // First completed load seeds the baseline: pre-existing activity
+            // is history, not news — only later transitions become unread.
             baselineRef.current = snapshotByRid(requests);
             return;
         }
@@ -136,7 +155,7 @@ export function useBookingNotify(options: UseBookingNotifyOptions): BookingNotif
                 fireBrowserNotification(event.ticketId, event.kind, event.rid);
             }
         }
-    }, [requests]);
+    }, [requests, listLoaded]);
 
     const markAllSeen = useCallback(() => {
         setUnreadRids([]);

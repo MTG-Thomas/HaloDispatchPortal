@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi, afterEach } from "vitest";
 import worker, { type BookingEnv } from "../entry";
-import { getBookingRequest } from "../kv";
+import { bookingRequestKey, getBookingRequest } from "../kv";
 import { signBookingToken } from "../token";
 import { resetRateLimitsForTests } from "../ratelimit";
 import { fakeKv } from "./fake-kv";
@@ -226,10 +226,38 @@ describe("slots endpoint", () => {
         expect(noToken.status).toBe(401);
     });
 
-    it("answers expired tokens with 410 and flips the record", async () => {
+    it("answers expired tokens with 410 without flipping a live record", async () => {
         const testEnv = env();
         stubHalo();
         const { rid } = await mint(testEnv);
+        const expired = await signBookingToken(
+            {
+                rid,
+                ticketId: 42,
+                agentIds: [7, 9],
+                appointmentTypeId: 3,
+                exp: Math.floor(Date.now() / 1000) - 10,
+            },
+            SECRET,
+        );
+        const response = await getSlots(testEnv, rid, expired);
+        expect(response.status).toBe(410);
+        expect(response.json.error).toBe("expired");
+        // The token's own expiry is not authority to expire the record: a
+        // superseded pre-extend token must not disable a renewed link.
+        expect((await getBookingRequest(testEnv.BOOKING_REQUESTS, rid))?.status).toBe("pending");
+    });
+
+    it("flips a record that is itself past exp when an expired token arrives", async () => {
+        const testEnv = env();
+        stubHalo();
+        const { rid } = await mint(testEnv);
+        const record = await getBookingRequest(testEnv.BOOKING_REQUESTS, rid);
+        expect(record?.status).toBe("pending");
+        await testEnv.BOOKING_REQUESTS.put(
+            bookingRequestKey(rid),
+            JSON.stringify({ ...record, exp: Math.floor(Date.now() / 1000) - 10 }),
+        );
         const expired = await signBookingToken(
             {
                 rid,

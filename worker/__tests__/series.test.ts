@@ -49,7 +49,7 @@ interface HaloStub {
     posts: { url: string; body: unknown }[];
 }
 
-function stubHalo(appointments: unknown[] = []): HaloStub {
+function stubHalo(appointments: unknown[] = [], agents?: unknown[]): HaloStub {
     const stub: HaloStub = { appointments, createdIds: [], posts: [] };
     let nextId = 700;
     vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
@@ -65,10 +65,12 @@ function stubHalo(appointments: unknown[] = []): HaloStub {
             return Response.json([{ id: nextId }]);
         }
         if (url.includes("/api/agent")) {
-            return Response.json([
-                { id: 7, name: "Dana Dispatcher" },
-                { id: 9, name: "Nina Booker" },
-            ]);
+            return Response.json(
+                agents ?? [
+                    { id: 7, name: "Dana Dispatcher" },
+                    { id: 9, name: "Nina Booker" },
+                ],
+            );
         }
         if (url.includes("/api/Tickets/")) {
             return Response.json({
@@ -307,7 +309,8 @@ describe("series book", () => {
         const picks = await occurrencePicks(testEnv, rid, token);
         const first = picks[0].slot;
 
-        // The same slot twice: the duplicate collides within the batch.
+        // The same slot twice under a mismatched occurrence label: the
+        // second selection fails occurrence binding per item.
         const { status, json } = await postBook(testEnv, rid, {
             token,
             bookings: [
@@ -321,7 +324,7 @@ describe("series book", () => {
         const results = json.results as Record<string, unknown>[];
         expect(results).toHaveLength(2);
         expect(results[0]).toMatchObject({ index: 0, ok: true, appointmentId: 701 });
-        expect(results[1]).toMatchObject({ index: 1, ok: false, error: "slot-taken" });
+        expect(results[1]).toMatchObject({ index: 1, ok: false, error: "invalid-slot" });
         expect(stub.posts).toHaveLength(1);
 
         const record = await getBookingRequest(testEnv.BOOKING_REQUESTS, rid);
@@ -402,7 +405,7 @@ describe("series book", () => {
         expect((await getBookingRequest(testEnv.BOOKING_REQUESTS, rid))?.status).toBe("pending");
     });
 
-    it("books a series on a single (non-series) link too", async () => {
+    it("rejects series bodies on single-book links", async () => {
         const testEnv = env();
         const stub = stubHalo();
         const { json: minted } = await mint(testEnv);
@@ -413,14 +416,140 @@ describe("series book", () => {
         const first = days[0].slots[0];
         const second = days[1].slots[0];
 
+        // A single-book capability must not authorize N appointments.
         const { status, json } = await postBook(testEnv, rid, {
             token,
             bookings: [first, second],
             utcOffset: 0,
         });
-        expect(status).toBe(201);
-        expect(json.appointmentIds).toEqual([701, 702]);
-        expect(stub.posts).toHaveLength(2);
+        expect(status).toBe(400);
+        expect(json.error).toBe("invalid-request");
+        expect(stub.posts).toHaveLength(0);
+        expect((await getBookingRequest(testEnv.BOOKING_REQUESTS, rid))?.status).toBe("pending");
+    });
+
+    it("rejects surplus selections beyond the issued occurrences", async () => {
+        const testEnv = env();
+        const stub = stubHalo();
+        const { rid, token } = await seriesLink(testEnv, 2);
+        const picks = await occurrencePicks(testEnv, rid, token);
+
+        const { status, json } = await postBook(testEnv, rid, {
+            token,
+            bookings: [
+                { ...picks[0].slot, occurrence: picks[0].date },
+                { ...picks[1].slot, occurrence: picks[1].date },
+                { ...picks[0].slot, occurrence: picks[0].date },
+            ],
+            utcOffset: 0,
+        });
+        expect(status).toBe(400);
+        expect(json.error).toBe("invalid-request");
+        expect(stub.posts).toHaveLength(0);
+        expect((await getBookingRequest(testEnv.BOOKING_REQUESTS, rid))?.status).toBe("pending");
+    });
+
+    it("fails unknown and duplicate occurrences per item", async () => {
+        const testEnv = env();
+        const stub = stubHalo();
+        const { rid, token } = await seriesLink(testEnv, 2);
+        const picks = await occurrencePicks(testEnv, rid, token);
+
+        const { status, json } = await postBook(testEnv, rid, {
+            token,
+            bookings: [
+                { ...picks[0].slot, occurrence: picks[0].date },
+                // Well-formed but outside the issued occurrence set
+                // (far-future so it can never coincide with issued dates).
+                {
+                    agentId: 7,
+                    start: "2031-06-15T10:00:00.000Z",
+                    end: "2031-06-15T10:30:00.000Z",
+                    occurrence: "2031-06-15",
+                },
+            ],
+            utcOffset: 0,
+        });
+        expect(status).toBe(207);
+        const results = json.results as Record<string, unknown>[];
+        expect(results[0]).toMatchObject({ index: 0, ok: true });
+        expect(results[1]).toMatchObject({ index: 1, ok: false, error: "invalid-slot" });
+        expect(stub.posts).toHaveLength(1);
+    });
+
+    it("fails a repeated occurrence per item", async () => {
+        const testEnv = env();
+        const stub = stubHalo();
+        const { rid, token } = await seriesLink(testEnv, 2);
+        const picks = await occurrencePicks(testEnv, rid, token);
+
+        const { status, json } = await postBook(testEnv, rid, {
+            token,
+            bookings: [
+                { ...picks[0].slot, occurrence: picks[0].date },
+                { ...picks[0].slot, occurrence: picks[0].date },
+            ],
+            utcOffset: 0,
+        });
+        expect(status).toBe(207);
+        const results = json.results as Record<string, unknown>[];
+        expect(results[0]).toMatchObject({ index: 0, ok: true });
+        expect(results[1]).toMatchObject({ index: 1, ok: false, error: "invalid-slot" });
+        expect(stub.posts).toHaveLength(1);
+    });
+
+    it("validates series selections against agent schedules and buffers", async () => {
+        const testEnv = env();
+        const dates = nextWeekdays(2);
+        const [d0, d1] = dates;
+        // Agent 7 works 10:00-12:00 only; agent 9 keeps defaults. Agent 9
+        // is busy 10:00-10:30 on the second date; the link buffers 30m.
+        const stub = stubHalo(
+            [
+                {
+                    id: 1,
+                    agent_id: 9,
+                    start_date: `${d1}T10:00:00.000`,
+                    end_date: `${d1}T10:30:00.000`,
+                    allday: false,
+                },
+            ],
+            [
+                { id: 7, name: "Dana Dispatcher", workhour_start: 10, workhour_end: 12 },
+                { id: 9, name: "Nina Booker" },
+            ],
+        );
+        const { json: minted } = await mint(testEnv, { occurrences: dates, bufferMin: 30 });
+        const rid = String(minted.rid);
+        const token = String(minted.token);
+
+        const { status, json } = await postBook(testEnv, rid, {
+            token,
+            bookings: [
+                // Outside agent 7's custom window.
+                {
+                    agentId: 7,
+                    start: `${d0}T09:00:00.000Z`,
+                    end: `${d0}T09:30:00.000Z`,
+                    occurrence: d0,
+                },
+                // Back-to-back with the busy block: the buffer takes it.
+                {
+                    agentId: 9,
+                    start: `${d1}T10:30:00.000Z`,
+                    end: `${d1}T11:00:00.000Z`,
+                    occurrence: d1,
+                },
+            ],
+            utcOffset: 0,
+        });
+        expect(status).toBe(409);
+        expect(json.error).toBe("slot-taken");
+        const results = json.results as Record<string, unknown>[];
+        expect(results[0]).toMatchObject({ index: 0, ok: false, error: "invalid-slot" });
+        expect(results[1]).toMatchObject({ index: 1, ok: false, error: "slot-taken" });
+        expect(stub.posts).toHaveLength(0);
+        expect((await getBookingRequest(testEnv.BOOKING_REQUESTS, rid))?.status).toBe("pending");
     });
 
     it("validates the bookings array shape", async () => {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { detectNewlyOverdue, overdueIds } from "@/lib/sla-escalation";
+import { overdueIds } from "@/lib/sla-escalation";
 import type { EnrichedTicket } from "@/types/halo";
 
 function notificationsAvailable(): boolean {
@@ -13,27 +13,43 @@ function sameTicketIds(a: readonly EnrichedTicket[], b: readonly EnrichedTicket[
 /**
  * Opt-in browser notifications for tickets that newly breach SLA.
  *
- * The overdue-id snapshot initializes silently on mount (pre-existing
- * overdue tickets never notify), and each ticket notifies at most once per
- * transition into overdue. No-op when disabled, when the Notification API
- * is unavailable, or when permission is not granted. Returns the tickets
- * that newly breached on the latest evaluation.
+ * Each observed ticket baselines silently on first sight (pre-existing or
+ * newly loaded overdue tickets never notify), and a ticket notifies only
+ * on a previously-observed non-overdue -> overdue transition — at most
+ * once per transition. Removing and reloading an overdue ticket
+ * re-baselines it instead of re-alerting. No-op when disabled, when the
+ * Notification API is unavailable, or when permission is not granted.
+ * Returns the tickets that newly breached on the latest evaluation.
  */
 export function useSlaOverdueAlerts(
     tickets: EnrichedTicket[],
     now: Date,
     enabled: boolean,
 ): EnrichedTicket[] {
-    const prevIdsRef = useRef<Set<number> | null>(null);
+    const observedRef = useRef<Map<number, boolean> | null>(null);
     const [newlyOverdue, setNewlyOverdue] = useState<EnrichedTicket[]>([]);
 
     useEffect(() => {
-        if (prevIdsRef.current === null) {
-            prevIdsRef.current = overdueIds(tickets, now);
+        const current = overdueIds(tickets, now);
+        const prev = observedRef.current;
+        if (prev === null) {
+            observedRef.current = new Map(
+                tickets.map((ticket) => [ticket.id, current.has(ticket.id)] as const),
+            );
             return;
         }
-        const newly = detectNewlyOverdue(prevIdsRef.current, tickets, now);
-        prevIdsRef.current = overdueIds(tickets, now);
+        const seen = new Set<number>();
+        const newly: EnrichedTicket[] = [];
+        for (const ticket of tickets) {
+            if (seen.has(ticket.id)) continue;
+            seen.add(ticket.id);
+            if (prev.get(ticket.id) === false && current.has(ticket.id)) {
+                newly.push(ticket);
+            }
+        }
+        observedRef.current = new Map(
+            tickets.map((ticket) => [ticket.id, current.has(ticket.id)] as const),
+        );
         // Bail out on unchanged ids: the effect re-runs whenever `now`
         // identity churns, and an unconditional fresh array would loop.
         setNewlyOverdue((prev) => (sameTicketIds(prev, newly) ? prev : newly));

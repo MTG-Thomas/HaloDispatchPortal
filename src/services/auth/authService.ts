@@ -13,7 +13,10 @@ import {
     expireDispatcherSession,
     fetchDispatcherSession,
     refreshDispatcherSession,
+    rotateDispatcherSession,
     DispatcherSessionError,
+    type SessionTenantEndpoints,
+    type VaultAccessCredentials,
     type VaultTokenPair,
 } from "../../lib/session-api";
 
@@ -232,12 +235,37 @@ export function isAuthenticated(): boolean {
 }
 
 /**
+ * Adopt access-only vault credentials into memory. The refresh token is
+ * never present here: rotation happens inside the Worker.
+ */
+function adoptAccessCredentials(creds: VaultAccessCredentials): void {
+    // Preserve the vaulted age (no re-stamp): proactive refresh must see
+    // the real token age, not the adoption time.
+    memoryTokens = {
+        access_token: creds.access_token,
+        expires_in: typeof creds.expires_in === "number" ? creds.expires_in : 0,
+        token_type: creds.token_type ?? "Bearer",
+        scope: creds.scope ?? "all:standard offline_access",
+        obtained_at: typeof creds.obtained_at === "number" ? creds.obtained_at : undefined,
+    };
+    removeLegacyStoredTokens();
+}
+
+/**
  * Create-or-refresh the vault session behind the persisted id. Best-effort:
  * the BFF may be unreachable (local dev without the Worker), so failures
  * only warn — memory tokens carry the page lifetime either way. Never
  * throws. A stale id (vault rotated/expired) falls back to a fresh create.
+ * On success the memory refresh token is dropped: the sealed vault copy
+ * is authoritative and rotation goes through the Worker from then on.
  */
-async function persistVaultSession(tokens: HaloTokens): Promise<void> {
+async function persistVaultSession(
+    tokens: HaloTokens,
+    tenant: SessionTenantEndpoints,
+): Promise<void> {
+    if (!tokens.refresh_token) {
+        return;
+    }
     const pair: VaultTokenPair = {
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
@@ -251,15 +279,19 @@ async function persistVaultSession(tokens: HaloTokens): Promise<void> {
         if (existing) {
             try {
                 saveDispatcherSession(await refreshDispatcherSession(existing.sessionId, pair));
-                return;
             } catch (error) {
                 if (!(error instanceof DispatcherSessionError) || error.code !== "unauthorized") {
                     throw error;
                 }
                 clearDispatcherSession();
+                saveDispatcherSession(await createDispatcherSession(pair, tenant));
             }
+        } else {
+            saveDispatcherSession(await createDispatcherSession(pair, tenant));
         }
-        saveDispatcherSession(await createDispatcherSession(pair));
+        if (memoryTokens) {
+            delete memoryTokens.refresh_token;
+        }
     } catch (error) {
         console.warn(
             "Dispatcher session persist failed; continuing with a memory-only session:",
@@ -270,9 +302,10 @@ async function persistVaultSession(tokens: HaloTokens): Promise<void> {
 
 /**
  * Repopulate memory tokens from the persisted vault session after a reload.
- * Returns true when memory holds a pair afterwards (possibly stale — the
- * caller still runs the normal expiry/refresh checks). An expired vault
- * session clears the stored id, failing closed to re-login. Never throws.
+ * Returns true when memory holds credentials afterwards (possibly stale —
+ * the caller still runs the normal expiry/refresh checks). An expired
+ * vault session clears the stored id, failing closed to re-login. Never
+ * throws.
  */
 export async function restoreDispatcherSession(): Promise<boolean> {
     const current = loadTokens();
@@ -285,23 +318,28 @@ export async function restoreDispatcherSession(): Promise<boolean> {
     }
     try {
         const used = await fetchDispatcherSession(existing.sessionId);
-        // Preserve the vaulted age (no re-stamp): proactive refresh must see
-        // the real token age, not the reload time.
-        memoryTokens = {
-            access_token: used.haloTokenPair.access_token,
-            refresh_token: used.haloTokenPair.refresh_token,
-            expires_in:
-                typeof used.haloTokenPair.expires_in === "number"
-                    ? used.haloTokenPair.expires_in
-                    : 0,
-            token_type: used.haloTokenPair.token_type ?? "Bearer",
-            scope: used.haloTokenPair.scope ?? "all:standard offline_access",
-            obtained_at:
-                typeof used.haloTokenPair.obtained_at === "number"
-                    ? used.haloTokenPair.obtained_at
-                    : undefined,
-        };
-        removeLegacyStoredTokens();
+        adoptAccessCredentials(used.haloAccessToken);
+        return true;
+    } catch (error) {
+        if (error instanceof DispatcherSessionError && error.code === "unauthorized") {
+            clearDispatcherSession();
+        }
+        return false;
+    }
+}
+
+/**
+ * Rotate the vault session's sealed pair inside the Worker and adopt the
+ * fresh access-only credentials. A 401 drops the session id (memory is
+ * left for the caller: vaulted memory has nothing to fall back to, but a
+ * stale id over a usable direct pair can still refresh directly). Any
+ * other failure keeps the id for a later retry. Never throws.
+ */
+async function rotateVaultSessionTokens(sessionId: string): Promise<boolean> {
+    try {
+        const rotated = await rotateDispatcherSession(sessionId);
+        saveDispatcherSession(rotated);
+        adoptAccessCredentials(rotated.haloAccessToken);
         return true;
     } catch (error) {
         if (error instanceof DispatcherSessionError && error.code === "unauthorized") {
@@ -328,14 +366,17 @@ export async function ensureFreshToken(config: AuthConfig): Promise<boolean> {
             return false;
         }
     }
-    if (!tokens.refresh_token) {
+    if (!tokens.refresh_token && !loadDispatcherSession()) {
         return false;
     }
     if (!isTokenExpiringSoon(tokens)) {
         // Backfill the vault behind an adopted/dev pair so tracking works
         // even before the first Halo refresh.
         if (!loadDispatcherSession()) {
-            await persistVaultSession(tokens);
+            await persistVaultSession(tokens, {
+                authServer: config.authServer,
+                clientId: config.clientId,
+            });
         }
         return true;
     }
@@ -430,7 +471,10 @@ export async function handleCallback(
         saveTokens(tokens);
         // Vault the pair behind the persisted session id (best-effort: login
         // still succeeds when the BFF is unreachable).
-        await persistVaultSession(loadTokens() as HaloTokens);
+        await persistVaultSession(loadTokens() as HaloTokens, {
+            authServer: config.authServer,
+            clientId: config.clientId,
+        });
 
         return true;
     } catch (error) {
@@ -458,7 +502,24 @@ async function isInvalidGrant(response: Response): Promise<boolean> {
     }
 }
 
+/**
+ * Refresh the access token. A persisted vault session rotates inside the
+ * Worker (memory holds no refresh token in that mode); otherwise — or
+ * when rotation fails — the memory pair refreshes directly against Halo
+ * (local dev without the BFF, or a stale id over a usable direct pair).
+ * Vaulted memory carries no refresh token, so a dead vault session still
+ * fails closed to re-login.
+ */
 export async function refreshToken(config: AuthConfig): Promise<boolean> {
+    const session = loadDispatcherSession();
+    if (session && (await rotateVaultSessionTokens(session.sessionId))) {
+        return true;
+    }
+    return refreshHaloDirect(config);
+}
+
+/** Direct `refresh_token` grant against Halo (no-vault mode only). */
+async function refreshHaloDirect(config: AuthConfig): Promise<boolean> {
     try {
         const tokens = loadTokens();
         if (!tokens?.refresh_token) {
@@ -507,8 +568,12 @@ export async function refreshToken(config: AuthConfig): Promise<boolean> {
             ...newTokens,
             refresh_token: newTokens.refresh_token || tokens.refresh_token,
         });
-        // Reseal the rotated pair into the vault (best-effort).
-        await persistVaultSession(loadTokens() as HaloTokens);
+        // Vault the rotated pair (best-effort): a reachable BFF moves
+        // this session into vaulted mode from here on.
+        await persistVaultSession(loadTokens() as HaloTokens, {
+            authServer: config.authServer,
+            clientId: config.clientId,
+        });
         return true;
     } catch (error) {
         // Network-level failure: keep stored tokens so a later retry or a

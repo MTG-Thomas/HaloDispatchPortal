@@ -16,6 +16,7 @@ import {
     type HaloTokenPair,
 } from "../kv";
 import { resetRateLimitsForTests } from "../ratelimit";
+import { createDispatcherSession } from "../session";
 import { verifyBookingToken } from "../token";
 import { fakeKv } from "./fake-kv";
 
@@ -347,7 +348,7 @@ describe("extend endpoint", () => {
         expect(newExp).toBeLessThanOrEqual(beforeSec + 7 * 24 * 60 * 60 + 30);
     });
 
-    it("requires the minting dispatcher's Bearer [REDACTED] 404s unknown rids", async () => {
+    it("requires the minting dispatcher's credential, 404s unknown rids", async () => {
         const testEnv = env();
         const { rid } = await mint(testEnv);
         const url = `/api/book/requests/${rid}/extend`;
@@ -355,7 +356,7 @@ describe("extend endpoint", () => {
         expect((await dispatcherFetch(testEnv, url, { method: "POST" }, false)).status).toBe(401);
 
         const headers = new Headers({ "cf-connecting-ip": freshIp() });
-        headers.set("Authorization", "Bearer [REDACTED]");
+        headers.set("Authorization", `Bearer wrong-token`);
         const wrong = await worker.fetch(
             new Request(`https://portal.test${url}`, { method: "POST", headers }),
             testEnv,
@@ -452,6 +453,128 @@ describe("extend endpoint", () => {
         if (oldVerified.ok) {
             expect(oldVerified.payload.exp).toBe(oldExp);
         }
+    });
+
+    it("carries series occurrences on the resealed token", async () => {
+        const testEnv = env();
+        const dates = ["2026-11-03T00:00:00.000Z", "2026-11-10T00:00:00.000Z"].map((iso) =>
+            iso.slice(0, 10),
+        );
+        const minted = await worker.fetch(
+            new Request("https://portal.test/api/book/requests", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "cf-connecting-ip": freshIp() },
+                body: JSON.stringify({
+                    ticketId: 42,
+                    agentIds: [7, 9],
+                    appointmentTypeId: 3,
+                    haloTokenPair: { ...PAIR },
+                    occurrences: dates,
+                }),
+            }),
+            testEnv,
+        );
+        expect(minted.status).toBe(201);
+        const { rid } = (await minted.json()) as { rid: string };
+        const { status, json } = await dispatcherFetch(
+            testEnv,
+            `/api/book/requests/${rid}/extend`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ days: 14 }),
+            },
+        );
+        expect(status).toBe(200);
+        const verified = await verifyBookingToken(String(json.token), SECRET);
+        expect(verified).toEqual({
+            ok: true,
+            payload: {
+                rid,
+                ticketId: 42,
+                agentIds: [7, 9],
+                appointmentTypeId: 3,
+                exp: expect.any(Number),
+                occurrences: dates,
+            },
+        });
+    });
+});
+
+describe("dispatcher session authority", () => {
+    async function sessionMint(testEnv: BookingEnv, sessionId: string): Promise<string> {
+        const response = await worker.fetch(
+            new Request("https://portal.test/api/book/requests", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "cf-connecting-ip": freshIp() },
+                body: JSON.stringify({
+                    ticketId: 42,
+                    agentIds: [7, 9],
+                    appointmentTypeId: 3,
+                    sessionId,
+                }),
+            }),
+            testEnv,
+        );
+        expect(response.status).toBe(201);
+        return ((await response.json()) as { rid: string }).rid;
+    }
+
+    async function sessionFetch(
+        testEnv: BookingEnv,
+        sessionId: string,
+        path: string,
+        init: RequestInit = {},
+    ): Promise<number> {
+        const headers = new Headers(init.headers);
+        headers.set("cf-connecting-ip", freshIp());
+        headers.set("Authorization", `Bearer ${sessionId}`);
+        const response = await worker.fetch(
+            new Request(`https://portal.test${path}`, { ...init, headers }),
+            testEnv,
+        );
+        return response.status;
+    }
+
+    it("revokes record authority when the minting session is deleted", async () => {
+        const testEnv = env();
+        const session = await createDispatcherSession(testEnv.BOOKING_REQUESTS, PAIR, SECRET);
+        const rid = await sessionMint(testEnv, session.sessionId);
+
+        // Live session: every dispatcher read and mutation answers.
+        expect(
+            await sessionFetch(testEnv, session.sessionId, `/api/book/requests/${rid}/status`),
+        ).toBe(200);
+        expect(
+            await sessionFetch(testEnv, session.sessionId, `/api/book/requests/${rid}/audit`),
+        ).toBe(200);
+
+        // Logout deletes the session.
+        expect(
+            await sessionFetch(testEnv, session.sessionId, "/api/book/sessions/current", {
+                method: "DELETE",
+            }),
+        ).toBe(200);
+
+        // The deleted id no longer authorizes its minted rows.
+        expect(
+            await sessionFetch(testEnv, session.sessionId, `/api/book/requests/${rid}/status`),
+        ).toBe(401);
+        expect(
+            await sessionFetch(testEnv, session.sessionId, `/api/book/requests/${rid}/audit`),
+        ).toBe(401);
+        expect(
+            await sessionFetch(testEnv, session.sessionId, `/api/book/requests/${rid}/extend`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ days: 7 }),
+            }),
+        ).toBe(401);
+        expect(
+            await sessionFetch(testEnv, session.sessionId, `/api/book/requests/${rid}/cancel`, {
+                method: "POST",
+            }),
+        ).toBe(401);
     });
 });
 

@@ -71,6 +71,7 @@ describe("useBookingNotify", () => {
         const refresh = vi.fn(async () => {});
         const { result } = renderHook(() =>
             useBookingNotify({
+                listLoaded: true,
                 requests: [summary({ clickedAt: "2026-10-02T00:00:00.000Z" })],
                 refresh,
             }),
@@ -79,11 +80,51 @@ describe("useBookingNotify", () => {
         expect(result.current.unreadRids).toEqual([]);
     });
 
+    it("ignores the pre-load empty list and seeds from the first load", () => {
+        stubNotification("granted");
+        const refresh = vi.fn(async () => {});
+        const { result, rerender } = renderHook(
+            ({
+                requests,
+                listLoaded,
+            }: {
+                requests: BookingRequestSummary[];
+                listLoaded: boolean;
+            }) => useBookingNotify({ listLoaded, requests, refresh, notifyEnabled: true }),
+            {
+                initialProps: {
+                    requests: [] as BookingRequestSummary[],
+                    listLoaded: false,
+                },
+            },
+        );
+        // First completed load carries pre-existing activity: history, not news.
+        rerender({
+            requests: [summary({ clickedAt: "2026-10-02T00:00:00.000Z" })],
+            listLoaded: true,
+        });
+        expect(result.current.unreadCount).toBe(0);
+        expect(fired).toHaveLength(0);
+        // Later transitions still surface.
+        rerender({
+            requests: [
+                summary({
+                    status: "booked",
+                    clickedAt: "2026-10-02T00:00:00.000Z",
+                    bookedAppointmentId: 9,
+                }),
+            ],
+            listLoaded: true,
+        });
+        expect(result.current.unreadCount).toBe(1);
+        expect(fired).toHaveLength(1);
+    });
+
     it("marks viewed and booked transitions unread", () => {
         const refresh = vi.fn(async () => {});
         const { result, rerender } = renderHook(
             ({ requests }: { requests: BookingRequestSummary[] }) =>
-                useBookingNotify({ requests, refresh }),
+                useBookingNotify({ listLoaded: true, requests, refresh }),
             { initialProps: { requests: [summary()] } },
         );
         rerender({
@@ -109,7 +150,7 @@ describe("useBookingNotify", () => {
         const refresh = vi.fn(async () => {});
         const { result, rerender } = renderHook(
             ({ requests }: { requests: BookingRequestSummary[] }) =>
-                useBookingNotify({ requests, refresh }),
+                useBookingNotify({ listLoaded: true, requests, refresh }),
             { initialProps: { requests: [summary()] } },
         );
         rerender({ requests: [summary({ clickedAt: "2026-10-02T00:00:00.000Z" })] });
@@ -135,7 +176,12 @@ describe("useBookingNotify", () => {
     it("polls on the interval and clamps below the floor", async () => {
         const refresh = vi.fn(async () => {});
         renderHook(() =>
-            useBookingNotify({ requests: [summary()], refresh, pollIntervalMs: 1_000 }),
+            useBookingNotify({
+                listLoaded: true,
+                requests: [summary()],
+                refresh,
+                pollIntervalMs: 1_000,
+            }),
         );
         await act(async () => {
             vi.advanceTimersByTime(BOOKING_NOTIFY_MIN_POLL_MS - 1);
@@ -149,7 +195,7 @@ describe("useBookingNotify", () => {
 
     it("skips polls while the tab is hidden", async () => {
         const refresh = vi.fn(async () => {});
-        renderHook(() => useBookingNotify({ requests: [summary()], refresh }));
+        renderHook(() => useBookingNotify({ listLoaded: true, requests: [summary()], refresh }));
         stubVisibility(true, "hidden");
         await act(async () => {
             vi.advanceTimersByTime(60_000);
@@ -159,7 +205,7 @@ describe("useBookingNotify", () => {
 
     it("re-polls once when the tab becomes visible", async () => {
         const refresh = vi.fn(async () => {});
-        renderHook(() => useBookingNotify({ requests: [summary()], refresh }));
+        renderHook(() => useBookingNotify({ listLoaded: true, requests: [summary()], refresh }));
         stubVisibility(false, "visible");
         await act(async () => {
             document.dispatchEvent(new Event("visibilitychange"));
@@ -169,7 +215,7 @@ describe("useBookingNotify", () => {
 
     it("never stacks overlapping refreshes", async () => {
         const refresh = vi.fn(() => new Promise<void>(() => {}));
-        renderHook(() => useBookingNotify({ requests: [summary()], refresh }));
+        renderHook(() => useBookingNotify({ listLoaded: true, requests: [summary()], refresh }));
         await act(async () => {
             vi.advanceTimersByTime(60_000);
         });
@@ -181,7 +227,9 @@ describe("useBookingNotify", () => {
 
     it("does not poll when disabled", async () => {
         const refresh = vi.fn(async () => {});
-        renderHook(() => useBookingNotify({ requests: [summary()], refresh, enabled: false }));
+        renderHook(() =>
+            useBookingNotify({ listLoaded: true, requests: [summary()], refresh, enabled: false }),
+        );
         await act(async () => {
             vi.advanceTimersByTime(600_000);
         });
@@ -191,7 +239,9 @@ describe("useBookingNotify", () => {
     it("stops polling after unmount", () => {
         const clearSpy = vi.spyOn(globalThis, "clearInterval");
         const refresh = vi.fn(async () => {});
-        const { unmount } = renderHook(() => useBookingNotify({ requests: [summary()], refresh }));
+        const { unmount } = renderHook(() =>
+            useBookingNotify({ listLoaded: true, requests: [summary()], refresh }),
+        );
         unmount();
         expect(clearSpy).toHaveBeenCalled();
     });
@@ -201,7 +251,7 @@ describe("useBookingNotify", () => {
         const refresh = vi.fn(async () => {});
         const { rerender } = renderHook(
             ({ requests }: { requests: BookingRequestSummary[] }) =>
-                useBookingNotify({ requests, refresh, notifyEnabled: true }),
+                useBookingNotify({ listLoaded: true, requests, refresh, notifyEnabled: true }),
             { initialProps: { requests: [summary()] } },
         );
         rerender({ requests: [summary({ clickedAt: "2026-10-02T00:00:00.000Z" })] });
@@ -215,7 +265,7 @@ describe("useBookingNotify", () => {
         const refresh = vi.fn(async () => {});
         const { rerender } = renderHook(
             ({ requests }: { requests: BookingRequestSummary[] }) =>
-                useBookingNotify({ requests, refresh, notifyEnabled: false }),
+                useBookingNotify({ listLoaded: true, requests, refresh, notifyEnabled: false }),
             { initialProps: { requests: [summary()] } },
         );
         rerender({ requests: [summary({ clickedAt: "2026-10-02T00:00:00.000Z" })] });
@@ -227,7 +277,7 @@ describe("useBookingNotify", () => {
         const refresh = vi.fn(async () => {});
         const { rerender } = renderHook(
             ({ requests }: { requests: BookingRequestSummary[] }) =>
-                useBookingNotify({ requests, refresh, notifyEnabled: true }),
+                useBookingNotify({ listLoaded: true, requests, refresh, notifyEnabled: true }),
             { initialProps: { requests: [summary()] } },
         );
         rerender({
@@ -245,7 +295,9 @@ describe("useBookingNotify", () => {
     it("resolves requestNotifyPermission through the browser API", async () => {
         stubNotification("granted");
         const refresh = vi.fn(async () => {});
-        const { result } = renderHook(() => useBookingNotify({ requests: [summary()], refresh }));
+        const { result } = renderHook(() =>
+            useBookingNotify({ listLoaded: true, requests: [summary()], refresh }),
+        );
         expect(result.current.notifyPermission).toBe("granted");
         let permission: string | undefined;
         await act(async () => {
@@ -256,7 +308,9 @@ describe("useBookingNotify", () => {
 
     it("reports unsupported where Notification is missing", () => {
         const refresh = vi.fn(async () => {});
-        const { result } = renderHook(() => useBookingNotify({ requests: [summary()], refresh }));
+        const { result } = renderHook(() =>
+            useBookingNotify({ listLoaded: true, requests: [summary()], refresh }),
+        );
         expect(result.current.notifyPermission).toBe("unsupported");
     });
 });

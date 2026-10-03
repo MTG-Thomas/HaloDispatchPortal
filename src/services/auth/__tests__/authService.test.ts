@@ -257,13 +257,20 @@ describe("authService vault restore", () => {
         mockRoutedFetch({
             vault: jsonResponse({
                 ...SESSION_REF,
-                haloTokenPair: { ...tokens(), obtained_at: obtainedAt },
+                haloAccessToken: {
+                    access_token: "access",
+                    expires_in: 3600,
+                    obtained_at: obtainedAt,
+                    token_type: "Bearer",
+                    scope: "all:standard offline_access",
+                },
             }),
         });
         await expect(restoreDispatcherSession()).resolves.toBe(true);
         const restored = loadTokens()!;
         expect(restored.access_token).toBe("access");
-        expect(restored.refresh_token).toBe("refresh");
+        // The refresh token never leaves the vault: memory is access-only.
+        expect(restored.refresh_token).toBeUndefined();
         // No re-stamp: proactive refresh sees the real age.
         expect(restored.obtained_at).toBe(obtainedAt);
     });
@@ -360,6 +367,12 @@ describe("authService OAuth flow", () => {
             haloTokenPair: { access_token: "access", refresh_token: "refresh" },
         });
         expect(loadTokens()?.access_token).toBe("access");
+        // Vaulted from here on: the tenant travels with the create, and the
+        // memory refresh token is dropped once the sealed copy exists.
+        expect(JSON.parse(vaultInit.body as string)).toMatchObject({
+            tenant: { authServer: CONFIG.authServer, clientId: CONFIG.clientId },
+        });
+        expect(loadTokens()?.refresh_token).toBeUndefined();
         expect(loadDispatcherSession()).toEqual(SESSION_REF);
         expect(loadPkceRequest()).toBeNull();
     });
@@ -404,24 +417,106 @@ describe("authService OAuth flow", () => {
     });
 
     it("refreshToken keeps the old refresh token when the response omits it", async () => {
+        // No-vault (direct) mode: no session id, unreachable BFF.
         saveTokens(tokens({ refresh_token: "old-refresh" }));
-        saveDispatcherSession(SESSION_REF);
-        const { impl, vaultCalls } = mockRoutedFetch({
-            halo: jsonResponse(tokens({ access_token: "new-access", refresh_token: "" })),
-            vault: jsonResponse(SESSION_REF),
+        const impl = vi.fn(async (url: unknown) => {
+            if (String(url) === `${CONFIG.authServer}/token`) {
+                return jsonResponse(tokens({ access_token: "new-access", refresh_token: "" }));
+            }
+            throw new TypeError("fetch failed");
         });
+        vi.stubGlobal("fetch", impl);
 
         expect(await refreshToken(CONFIG)).toBe(true);
         const stored = loadTokens()!;
         expect(stored.access_token).toBe("new-access");
         expect(stored.refresh_token).toBe("old-refresh");
         expect(typeof stored.obtained_at).toBe("number");
-        // The rotated pair is resealed into the existing vault session.
-        expect(vaultCalls).toEqual(["POST /api/book/sessions/refresh"]);
+        expect(loadDispatcherSession()).toBeNull();
+    });
+
+    it("refreshToken vaults a direct refresh and drops the memory refresh token", async () => {
+        saveTokens(tokens({ refresh_token: "old-refresh" }));
+        const { impl, vaultCalls } = mockRoutedFetch({
+            halo: jsonResponse(tokens({ access_token: "new-access", refresh_token: "" })),
+            vault: jsonResponse(SESSION_REF, 201),
+        });
+
+        expect(await refreshToken(CONFIG)).toBe(true);
+        // Reachable BFF moves the session into vaulted mode from here on.
+        expect(loadTokens()?.access_token).toBe("new-access");
+        expect(loadTokens()?.refresh_token).toBeUndefined();
+        expect(loadDispatcherSession()).toEqual(SESSION_REF);
+        expect(vaultCalls).toEqual(["POST /api/book/sessions"]);
         const [, vaultInit] = impl.mock.calls[1] as unknown as [string, RequestInit];
         expect(JSON.parse(vaultInit.body as string)).toMatchObject({
             haloTokenPair: { access_token: "new-access", refresh_token: "old-refresh" },
+            tenant: { authServer: CONFIG.authServer, clientId: CONFIG.clientId },
         });
+    });
+
+    it("refreshToken rotates inside the Worker when a vault session exists", async () => {
+        saveTokens({
+            access_token: "stale-access",
+            expires_in: 3600,
+            token_type: "Bearer",
+            scope: "all:standard offline_access",
+            obtained_at: Date.now() - 7200_000,
+        });
+        saveDispatcherSession(SESSION_REF);
+        const fresh = { sessionId: "sess-1", expiresAt: "2026-12-02T00:00:00.000Z" };
+        const { impl, vaultCalls } = mockRoutedFetch({
+            vault: jsonResponse({
+                ...fresh,
+                haloAccessToken: {
+                    access_token: "rotated-access",
+                    expires_in: 3600,
+                    obtained_at: Date.now(),
+                },
+            }),
+        });
+
+        expect(await refreshToken(CONFIG)).toBe(true);
+        // No direct Halo call: rotation stays inside the Worker.
+        expect(impl).toHaveBeenCalledTimes(1);
+        expect(vaultCalls).toEqual(["POST /api/book/sessions/refresh"]);
+        const [, vaultInit] = impl.mock.calls[0] as unknown as [string, RequestInit];
+        expect(JSON.parse(vaultInit.body as string)).toEqual({ rotate: true });
+        expect(loadTokens()?.access_token).toBe("rotated-access");
+        expect(loadTokens()?.refresh_token).toBeUndefined();
+        expect(loadDispatcherSession()).toEqual(fresh);
+    });
+
+    it("refreshToken drops a dead vault session and fails closed to re-login", async () => {
+        saveTokens({
+            access_token: "stale-access",
+            expires_in: 3600,
+            token_type: "Bearer",
+            scope: "all:standard offline_access",
+            obtained_at: Date.now() - 7200_000,
+        });
+        saveDispatcherSession(SESSION_REF);
+        mockRoutedFetch({ vault: jsonResponse({ error: "Unauthorized" }, 401) });
+
+        expect(await refreshToken(CONFIG)).toBe(false);
+        expect(loadDispatcherSession()).toBeNull();
+        // Access-only memory has nothing to refresh directly with.
+        expect(loadTokens()?.access_token).toBe("stale-access");
+    });
+
+    it("refreshToken keeps the session on transient rotation failures", async () => {
+        saveTokens({
+            access_token: "stale-access",
+            expires_in: 3600,
+            token_type: "Bearer",
+            scope: "all:standard offline_access",
+            obtained_at: Date.now() - 7200_000,
+        });
+        saveDispatcherSession(SESSION_REF);
+        mockRoutedFetch({ vault: jsonResponse({ error: "halo-unavailable" }, 502) });
+
+        expect(await refreshToken(CONFIG)).toBe(false);
+        expect(loadDispatcherSession()).toEqual(SESSION_REF);
     });
 
     it("refreshToken falls back to a fresh session when the vault id is stale", async () => {
@@ -436,14 +531,16 @@ describe("authService OAuth flow", () => {
                     : jsonResponse(fresh, 201),
         });
 
+        // Rotation 401 drops the stale id; the usable memory pair refreshes
+        // directly and vaults behind a fresh session.
         expect(await refreshToken(CONFIG)).toBe(true);
         expect(vaultCalls).toEqual(["POST /api/book/sessions/refresh", "POST /api/book/sessions"]);
         expect(loadDispatcherSession()).toEqual(fresh);
     });
 
     it("refreshToken clears tokens and session on invalid_grant", async () => {
+        // Direct mode: no vault session, so the grant failure clears.
         saveTokens(tokens());
-        saveDispatcherSession(SESSION_REF);
         const { vaultCalls } = mockRoutedFetch({
             halo: {
                 ok: false,
@@ -451,13 +548,12 @@ describe("authService OAuth flow", () => {
                 statusText: "Bad Request",
                 json: async () => ({ error: "invalid_grant" }),
             },
-            vault: jsonResponse({ ok: true }),
         });
 
         expect(await refreshToken(CONFIG)).toBe(false);
         expect(loadTokens()).toBeNull();
         expect(loadDispatcherSession()).toBeNull();
-        expect(vaultCalls).toEqual(["DELETE /api/book/sessions/current"]);
+        expect(vaultCalls).toHaveLength(0);
     });
 
     it("refreshToken keeps tokens on a 400 without invalid_grant", async () => {
@@ -519,16 +615,27 @@ describe("authService OAuth flow", () => {
         expect(await ensureFreshToken(CONFIG)).toBe(true);
         expect(vaultCalls).toEqual(["POST /api/book/sessions"]);
         expect(loadDispatcherSession()).toEqual(SESSION_REF);
+        expect(loadTokens()?.refresh_token).toBeUndefined();
     });
 
     it("ensureFreshToken restores memory from the vault after a reload", async () => {
         saveDispatcherSession(SESSION_REF);
-        mockRoutedFetch({
-            vault: jsonResponse({ ...SESSION_REF, haloTokenPair: tokens() }),
+        const { vaultCalls } = mockRoutedFetch({
+            vault: jsonResponse({
+                ...SESSION_REF,
+                haloAccessToken: {
+                    access_token: "access",
+                    expires_in: 3600,
+                    obtained_at: Date.now(),
+                },
+            }),
         });
 
         expect(await ensureFreshToken(CONFIG)).toBe(true);
         expect(loadTokens()?.access_token).toBe("access");
+        expect(loadTokens()?.refresh_token).toBeUndefined();
+        // Fresh restore: no rotation needed.
+        expect(vaultCalls).toEqual(["GET /api/book/sessions/current"]);
     });
 
     it("ensureFreshToken returns false with neither memory nor session", async () => {

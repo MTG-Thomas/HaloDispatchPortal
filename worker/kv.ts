@@ -112,6 +112,15 @@ export interface NewBookingRequest {
 /** Booking links live 7 days; KV records expire with them. */
 export const BOOKING_REQUEST_TTL_SECONDS = 7 * 24 * 60 * 60;
 
+/**
+ * KV TTL for a record write: the record must outlive its own `exp` (an
+ * extend can push expiry to 30d), never below one full link TTL so
+ * terminal records still age out. The +1d grace covers KV expiry drift.
+ */
+export function recordTtlSeconds(exp: number, nowSec: number): number {
+    return Math.max(BOOKING_REQUEST_TTL_SECONDS, exp - nowSec + 24 * 60 * 60);
+}
+
 /** Fresh links from extend default to another full TTL. */
 export const BOOKING_EXTEND_DEFAULT_DAYS = 7;
 export const BOOKING_EXTEND_MAX_DAYS = 30;
@@ -253,7 +262,9 @@ export async function createBookingRequest(
         ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
         ...(input.occurrences !== undefined ? { occurrences: input.occurrences } : {}),
     };
-    await kv.put(key, JSON.stringify(record), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
+    await kv.put(key, JSON.stringify(record), {
+        expirationTtl: recordTtlSeconds(record.exp, Math.floor(now.getTime() / 1000)),
+    });
     return record;
 }
 
@@ -320,7 +331,9 @@ export async function setBookingStatus(
         );
     }
     const updated: BookingRequestRecord = { ...record, status: next, updatedAt: now.toISOString() };
-    await kv.put(key, JSON.stringify(updated), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
+    await kv.put(key, JSON.stringify(updated), {
+        expirationTtl: recordTtlSeconds(updated.exp, Math.floor(now.getTime() / 1000)),
+    });
     return updated;
 }
 
@@ -349,7 +362,9 @@ export async function markBookingClicked(
         clickedAt: now.toISOString(),
         updatedAt: now.toISOString(),
     };
-    await kv.put(key, JSON.stringify(updated), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
+    await kv.put(key, JSON.stringify(updated), {
+        expirationTtl: recordTtlSeconds(updated.exp, Math.floor(now.getTime() / 1000)),
+    });
     return { record: updated, firstView: true };
 }
 
@@ -382,7 +397,9 @@ export async function markBookingBooked(
         bookedAppointmentId: appointmentId,
         updatedAt: now.toISOString(),
     };
-    await kv.put(key, JSON.stringify(updated), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
+    await kv.put(key, JSON.stringify(updated), {
+        expirationTtl: recordTtlSeconds(updated.exp, Math.floor(now.getTime() / 1000)),
+    });
     return updated;
 }
 
@@ -415,7 +432,9 @@ export async function extendBookingExpiry(
         exp: newExp,
         updatedAt: now.toISOString(),
     };
-    await kv.put(key, JSON.stringify(updated), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
+    await kv.put(key, JSON.stringify(updated), {
+        expirationTtl: recordTtlSeconds(updated.exp, Math.floor(now.getTime() / 1000)),
+    });
     return updated;
 }
 
@@ -450,7 +469,9 @@ export async function markBookingSeriesBooked(
         bookedAppointmentIds: [...appointmentIds],
         updatedAt: now.toISOString(),
     };
-    await kv.put(key, JSON.stringify(updated), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
+    await kv.put(key, JSON.stringify(updated), {
+        expirationTtl: recordTtlSeconds(updated.exp, Math.floor(now.getTime() / 1000)),
+    });
     return updated;
 }
 
@@ -478,7 +499,8 @@ function parseAuditEvents(raw: string | null): BookingAuditEvent[] {
 /**
  * Append one lifecycle event to the request's audit trail, oldest first.
  * Corrupt prior values reset to a fresh trail rather than failing the
- * booking flow; the trail is capped at {@link MAX_AUDIT_EVENTS}.
+ * booking flow; the trail is capped at {@link MAX_AUDIT_EVENTS}. The audit
+ * key shares the record's TTL so an extended link keeps its trail.
  */
 export async function appendAuditEvent(
     kv: KeyValueClient,
@@ -492,8 +514,26 @@ export async function appendAuditEvent(
     events.push({ type, at: now.toISOString(), ...(detail !== undefined ? { detail } : {}) });
     const capped =
         events.length > MAX_AUDIT_EVENTS ? events.slice(events.length - MAX_AUDIT_EVENTS) : events;
-    await kv.put(key, JSON.stringify(capped), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
+    await kv.put(key, JSON.stringify(capped), {
+        expirationTtl: await auditTtlSeconds(kv, rid, now),
+    });
     return capped;
+}
+
+/** Audit-key TTL follows the record's expiry; one link TTL when unreadable. */
+async function auditTtlSeconds(kv: KeyValueClient, rid: string, now: Date): Promise<number> {
+    try {
+        const raw = await kv.get(bookingRequestKey(rid));
+        if (raw !== null) {
+            const record = parseRecord(raw);
+            if (typeof record.exp === "number") {
+                return recordTtlSeconds(record.exp, Math.floor(now.getTime() / 1000));
+            }
+        }
+    } catch {
+        // Fall through to the default TTL: audit must never break booking.
+    }
+    return BOOKING_REQUEST_TTL_SECONDS;
 }
 
 /** Read one request's audit trail, oldest first; unknown rids read empty. */
@@ -524,6 +564,8 @@ export async function updateSealedTokens(
         sealedTokens,
         updatedAt: now.toISOString(),
     };
-    await kv.put(key, JSON.stringify(updated), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
+    await kv.put(key, JSON.stringify(updated), {
+        expirationTtl: recordTtlSeconds(updated.exp, Math.floor(now.getTime() / 1000)),
+    });
     return updated;
 }

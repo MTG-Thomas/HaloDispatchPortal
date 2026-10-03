@@ -29,6 +29,7 @@ function tracker(overrides: Partial<BookingTracker> = {}): BookingTracker {
         loading: false,
         error: null,
         busyRid: null,
+        loaded: true,
         refresh: vi.fn(async () => undefined),
         cancel: vi.fn(async (rid: string) => summary({ rid })),
         resend: vi.fn(async (previous: BookingRequestSummary) => ({

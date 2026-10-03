@@ -117,6 +117,41 @@ describe("useSlaOverdueAlerts", () => {
         expect(instances).toEqual([]);
     });
 
+    it("baselines newly loaded overdue tickets instead of alerting", () => {
+        stubNotifications();
+        const overdue = ticket({ id: 5, fixbydate: "2026-10-01T12:00:00.000Z" });
+        const { result, rerender } = renderHook(
+            ({ tickets }) => useSlaOverdueAlerts(tickets, NOW, true),
+            { initialProps: { tickets: [] as EnrichedTicket[] } },
+        );
+        // Tickets arrive after mount, already overdue: history, not news.
+        rerender({ tickets: [overdue] });
+        expect(result.current).toEqual([]);
+        expect(instances).toEqual([]);
+        // A later genuine transition still fires.
+        const breaching = ticket({ id: 6, fixbydate: "2026-10-03T12:30:00.000Z" });
+        rerender({ tickets: [overdue, breaching] });
+        expect(result.current).toEqual([]);
+        rerender({ tickets: [overdue, { ...breaching, fixbydate: "2026-10-01T12:00:00.000Z" }] });
+        expect(result.current.map((t) => t.id)).toEqual([6]);
+        expect(instances).toHaveLength(1);
+    });
+
+    it("re-baselines a removed and reloaded overdue ticket instead of re-alerting", () => {
+        stubNotifications();
+        const overdue = ticket({ id: 7, fixbydate: "2026-10-01T12:00:00.000Z" });
+        const { result, rerender } = renderHook(
+            ({ tickets }) => useSlaOverdueAlerts(tickets, NOW, true),
+            { initialProps: { tickets: [overdue] } },
+        );
+        expect(result.current).toEqual([]);
+        rerender({ tickets: [] });
+        expect(result.current).toEqual([]);
+        rerender({ tickets: [overdue] });
+        expect(result.current).toEqual([]);
+        expect(instances).toEqual([]);
+    });
+
     it("does not notify when permission is not granted", () => {
         stubNotifications("denied");
         const tickets = [ticket({ id: 4, fixbydate: "2026-10-03T12:30:00.000Z" })];

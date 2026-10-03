@@ -116,7 +116,7 @@ export function OutstandingRequests({ tracker }: { tracker?: BookingTracker } = 
 
     const onSend = async (summary: BookingRequestSummary, channel: BookingSendChannel) => {
         try {
-            const { oldInvalidated } = await sendBookingLink({
+            const { oldInvalidated, copied } = await sendBookingLink({
                 ticketId: summary.ticketId,
                 channel,
                 origin: window.location.origin,
@@ -124,11 +124,12 @@ export function OutstandingRequests({ tracker }: { tracker?: BookingTracker } = 
                 open: (href) => {
                     window.location.href = href;
                 },
+                copyFallback: (url) => navigator.clipboard.writeText(url),
             });
             toast.success(
                 channel === "sms"
-                    ? "Opening text message with booking link…"
-                    : "Opening email with booking link…",
+                    ? `Opening text message with booking link…${copied ? " Link also copied." : ""}`
+                    : `Opening email with booking link…${copied ? " Link also copied." : ""}`,
             );
             if (!oldInvalidated) {
                 toast.warning("The old link is still live — cancel it from this queue.");

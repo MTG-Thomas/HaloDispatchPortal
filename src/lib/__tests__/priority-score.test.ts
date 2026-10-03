@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+    accumulateTenantPriorityIds,
     buildTenantPriorityBoostMap,
     DEFAULT_PRIORITY_BOOST_MAP,
     PRIORITY_SCORE_WEIGHTS,
@@ -182,5 +183,27 @@ describe("resolvePriorityBoostMap", () => {
     it("returns the built tenant map when tenant ids are present", () => {
         expect(resolvePriorityBoostMap([50, 10, 10])).toEqual({ 10: 15, 50: 0 });
         expect(resolvePriorityBoostMap([1, 2, 3, 4])).toEqual(DEFAULT_PRIORITY_BOOST_MAP);
+    });
+});
+
+describe("accumulateTenantPriorityIds", () => {
+    it("unions page ids across loads so boosts stay stable under pagination", () => {
+        const first = accumulateTenantPriorityIds({ key: "t", ids: [] }, "t", [10, 50]);
+        expect(first).toEqual({ key: "t", ids: [10, 50] });
+        // A later page with only priority 50 keeps the 10/50 map instead
+        // of rescoping 50 to the max boost.
+        const second = accumulateTenantPriorityIds(first, "t", [50]);
+        expect(second).toBe(first);
+        expect(resolvePriorityBoostMap(second.ids)).toEqual({ 10: 15, 50: 0 });
+        // A genuinely new priority folds in.
+        const third = accumulateTenantPriorityIds(second, "t", [30]);
+        expect(third.ids).toEqual([10, 50, 30]);
+    });
+
+    it("ignores invalid ids and resets on tenant change", () => {
+        const prev = accumulateTenantPriorityIds({ key: "t", ids: [] }, "t", [0, -1, 2.5, 10]);
+        expect(prev.ids).toEqual([10]);
+        const switched = accumulateTenantPriorityIds(prev, "other", [10]);
+        expect(switched).toEqual({ key: "other", ids: [10] });
     });
 });

@@ -171,6 +171,40 @@ export function buildTenantPriorityBoostMap(priorityIds: number[]): Record<numbe
 }
 
 /**
+ * Tenant priority ids accumulated across ticket loads. The loaded page is
+ * a slice, so deriving the boost map from each page would rescale every
+ * priority's boost on pagination or filter changes; the union only grows
+ * (reset on tenant change), keeping a given priority's boost stable.
+ */
+export interface TenantPriorityAccumulation {
+    key: string;
+    ids: number[];
+}
+
+/**
+ * Fold one page of loaded priority ids into the stable tenant set.
+ * Non-positive and non-integer ids are ignored (matching
+ * buildTenantPriorityBoostMap); a tenant-key change resets. Returns the
+ * previous object untouched when nothing changed, so callers can bail
+ * out of re-renders.
+ */
+export function accumulateTenantPriorityIds(
+    prev: TenantPriorityAccumulation,
+    tenantKey: string,
+    priorityIds: readonly number[],
+): TenantPriorityAccumulation {
+    const base = prev.key === tenantKey ? new Set(prev.ids) : new Set<number>();
+    let changed = prev.key !== tenantKey;
+    for (const id of priorityIds) {
+        if (Number.isInteger(id) && id > 0 && !base.has(id)) {
+            base.add(id);
+            changed = true;
+        }
+    }
+    return changed ? { key: tenantKey, ids: [...base] } : prev;
+}
+
+/**
  * Resolve the boost map for scoring: the tenant map when tenant priority
  * ids are present, otherwise DEFAULT_PRIORITY_BOOST_MAP. Returns the
  * DEFAULT object itself (not a copy) on the fallback path.

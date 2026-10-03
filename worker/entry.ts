@@ -38,12 +38,7 @@ import {
     setBookingStatus,
     updateSealedTokens,
 } from "./kv";
-import type {
-    BookingAuditEvent,
-    BookingRequestRecord,
-    HaloTokenPair,
-    KeyValueClient,
-} from "./kv";
+import type { BookingAuditEvent, BookingRequestRecord, HaloTokenPair, KeyValueClient } from "./kv";
 import {
     createDispatcherSession,
     deleteDispatcherSession,
@@ -51,6 +46,7 @@ import {
     refreshDispatcherSession,
     SessionError,
 } from "./session";
+import type { DispatcherSessionTenant } from "./session";
 import { createHaloClient, HaloApiError } from "./halo";
 import type { HaloClient, WorkerAppointment } from "./halo";
 import {
@@ -254,11 +250,14 @@ function timingSafeEqual(a: string, b: string): boolean {
 }
 
 /**
- * Dispatcher auth for status/cancel. The vault path compares the Bearer
- * session id against the record's minting session (no crypto needed); the
- * legacy path compares the Bearer Halo access token — presented directly
- * (pre-vault clients) or held by a live vault session (pre-vault records
- * still tracked after the upgrade) — against the sealed pair.
+ * Dispatcher auth for status/cancel/extend/audit. The vault path compares
+ * the session id against the record's minting session (no crypto needed); the
+ * legacy path compares the presented Halo access token — presented
+ * directly (pre-vault clients) or held by a live vault session (pre-vault
+ * records still tracked after the upgrade) — against the sealed pair.
+ * The vault path requires the minting session to still be live, so logout
+ * (session delete) revokes tracking authority over previously minted
+ * records.
  */
 async function isDispatcherAuthorized(
     request: Request,
@@ -270,7 +269,10 @@ async function isDispatcherAuthorized(
         return false;
     }
     if (record.sessionId && timingSafeEqual(bearer, record.sessionId)) {
-        return true;
+        const session = await openDispatcherSession(env.BOOKING_REQUESTS, bearer, env.SECRET).catch(
+            () => null,
+        );
+        return session !== null;
     }
     let pair: HaloTokenPair;
     try {
@@ -434,17 +436,19 @@ async function handleStatus(request: Request, env: BookingEnv, rid: string): Pro
 
 /**
  * Dispatcher tracking list: every request the caller minted, newest first.
- * Session-bound records match by session id without opening; the legacy
- * access-token fallback opens each row as before. Unopenable rows (sealed
- * under a rotated secret) are skipped. Strangers get 200 with zero rows.
+ * Session-bound records match by session id and require that session to
+ * still be live (logout revokes tracking); the legacy access-token
+ * fallback opens each row as before. Unopenable rows (sealed under a
+ * rotated secret) are skipped. Strangers get 200 with zero rows.
  */
 async function handleList(request: Request, env: BookingEnv): Promise<Response> {
     const bearer = bearerToken(request);
     if (!bearer) {
         return json(401, { error: "Unauthorized" });
     }
-    // Resolve the Bearer [REDACTED] once: a live session also adopts pre-vault
-    // rows sealed with the same Halo access token (see isDispatcherAuthorized).
+    // Resolve the presented credential once: a live session also adopts
+    // pre-vault rows sealed with the same Halo access token (see
+    // isDispatcherAuthorized).
     const session = await openDispatcherSession(env.BOOKING_REQUESTS, bearer, env.SECRET).catch(
         () => null,
     );
@@ -458,7 +462,11 @@ async function handleList(request: Request, env: BookingEnv): Promise<Response> 
             );
         };
         if (record.sessionId && timingSafeEqual(bearer, record.sessionId)) {
-            await pushMine();
+            // Live session required: a deleted session's id no longer
+            // authorizes its minted rows (see isDispatcherAuthorized).
+            if (session) {
+                await pushMine();
+            }
             continue;
         }
         let pair: HaloTokenPair;
@@ -508,6 +516,40 @@ async function handleCancel(request: Request, env: BookingEnv, rid: string): Pro
 /* other dispatcher routes.                                                */
 /* --------------------------------------------------------------------- */
 
+/**
+ * Validate the non-secret tenant endpoints stored for Worker-side token
+ * rotation. Fail closed: only well-formed https origins are ever called.
+ */
+function parseSessionTenant(
+    value: unknown,
+): { ok: true; tenant: DispatcherSessionTenant } | { ok: false } {
+    if (typeof value !== "object" || value === null) {
+        return { ok: false };
+    }
+    const { authServer, clientId } = value as Record<string, unknown>;
+    if (typeof authServer !== "string" || typeof clientId !== "string") {
+        return { ok: false };
+    }
+    if (
+        authServer.length === 0 ||
+        authServer.length > 2048 ||
+        clientId.length === 0 ||
+        clientId.length > 256
+    ) {
+        return { ok: false };
+    }
+    let url: URL;
+    try {
+        url = new URL(authServer);
+    } catch {
+        return { ok: false };
+    }
+    if (url.protocol !== "https:") {
+        return { ok: false };
+    }
+    return { ok: true, tenant: { authServer, clientId } };
+}
+
 async function handleSessionCreate(request: Request, env: BookingEnv): Promise<Response> {
     let body: unknown;
     try {
@@ -522,7 +564,27 @@ async function handleSessionCreate(request: Request, env: BookingEnv): Promise<R
             details: ["haloTokenPair must include non-empty access_token and refresh_token"],
         });
     }
-    const record = await createDispatcherSession(env.BOOKING_REQUESTS, pair, env.SECRET);
+    const rawTenant = (body as { tenant?: unknown } | null)?.tenant;
+    let tenant: DispatcherSessionTenant | undefined;
+    if (rawTenant !== undefined) {
+        const parsed = parseSessionTenant(rawTenant);
+        if (!parsed.ok) {
+            return json(400, {
+                error: "Invalid session request",
+                details: ["tenant must carry a valid https authServer and non-empty clientId"],
+            });
+        }
+        tenant = parsed.tenant;
+    }
+    const record = await createDispatcherSession(
+        env.BOOKING_REQUESTS,
+        pair,
+        env.SECRET,
+        new Date(),
+        {
+            ...(tenant !== undefined ? { tenant } : {}),
+        },
+    );
     return json(201, {
         sessionId: record.sessionId,
         expiresAt: new Date(record.exp * 1000).toISOString(),
@@ -530,9 +592,33 @@ async function handleSessionCreate(request: Request, env: BookingEnv): Promise<R
 }
 
 /**
- * Use: validate the Bearer [REDACTED] and hand the sealed pair back so the SPA
- * can repopulate its (memory-only) tokens after a reload. Read-only: TTL is
- * extended by refresh, never by reads.
+ * Access-only projection of a vaulted pair: everything the SPA needs to
+ * call Halo and age the token, minus the refresh token — which never
+ * leaves the vault, so a stolen session id cannot mint fresh Halo access.
+ */
+function accessCredentials(
+    pair: HaloTokenPair,
+    obtainedAtMs: number | undefined,
+): Record<string, unknown> {
+    const obtained =
+        typeof obtainedAtMs === "number" && Number.isFinite(obtainedAtMs)
+            ? obtainedAtMs
+            : typeof pair.obtained_at === "number" && Number.isFinite(pair.obtained_at)
+              ? pair.obtained_at
+              : undefined;
+    return {
+        access_token: pair.access_token,
+        ...(typeof pair.expires_in === "number" ? { expires_in: pair.expires_in } : {}),
+        ...(obtained !== undefined ? { obtained_at: obtained } : {}),
+        ...(typeof pair.token_type === "string" ? { token_type: pair.token_type } : {}),
+        ...(typeof pair.scope === "string" ? { scope: pair.scope } : {}),
+    };
+}
+
+/**
+ * Use: validate the presented session id and hand access-only
+ * credentials back so the SPA can repopulate its (memory-only) tokens
+ * after a reload. Read-only: TTL is extended by refresh, never by reads.
  */
 async function handleSessionUse(request: Request, env: BookingEnv): Promise<Response> {
     const bearer = bearerToken(request);
@@ -546,14 +632,64 @@ async function handleSessionUse(request: Request, env: BookingEnv): Promise<Resp
     return json(200, {
         sessionId: opened.record.sessionId,
         expiresAt: new Date(opened.record.exp * 1000).toISOString(),
-        haloTokenPair: opened.pair,
+        haloAccessToken: accessCredentials(opened.pair, opened.record.obtainedAtMs),
     });
 }
 
 /**
+ * Rotate a live session's sealed pair against Halo inside the Worker and
+ * return fresh access-only credentials. The SPA holds no refresh token,
+ * so rotation is the only way a vaulted session survives access expiry.
+ * Unknown/dead sessions and legacy sessions without tenant endpoints
+ * answer 401 (the SPA re-logins); Halo failures answer 502 and keep the
+ * session, so transient outages can retry.
+ */
+async function handleSessionRotate(env: BookingEnv, sessionId: string): Promise<Response> {
+    const opened = await openDispatcherSession(env.BOOKING_REQUESTS, sessionId, env.SECRET);
+    if (!opened) {
+        return json(401, { error: "Unauthorized" });
+    }
+    const tenant = opened.record.tenant;
+    if (!tenant) {
+        return json(401, { error: "Unauthorized" });
+    }
+    const client = createHaloClient({
+        fetchImpl: (input, init) => fetch(input, init),
+        authServer: tenant.authServer,
+        clientId: tenant.clientId,
+    });
+    let nextPair: HaloTokenPair;
+    try {
+        nextPair = await client.refreshTokenPair(opened.pair);
+    } catch {
+        return json(502, { error: "halo-unavailable" });
+    }
+    try {
+        const updated = await refreshDispatcherSession(
+            env.BOOKING_REQUESTS,
+            sessionId,
+            env.SECRET,
+            nextPair,
+        );
+        return json(200, {
+            sessionId: updated.sessionId,
+            expiresAt: new Date(updated.exp * 1000).toISOString(),
+            haloAccessToken: accessCredentials(nextPair, updated.obtainedAtMs),
+        });
+    } catch (error) {
+        if (error instanceof SessionError && error.code === "not-found") {
+            return json(401, { error: "Unauthorized" });
+        }
+        throw error;
+    }
+}
+
+/**
  * Refresh: extend a live session by a full TTL, resealing the replacement
- * pair when the body carries one (post-rotation). The body itself is
- * optional — a bare POST only extends.
+ * pair when the body carries one (legacy post-rotation reseal), or
+ * rotating the sealed pair against Halo when the body asks
+ * (`{ rotate: true }`). The body itself is optional — a bare POST only
+ * extends.
  */
 async function handleSessionRefresh(request: Request, env: BookingEnv): Promise<Response> {
     const bearer = bearerToken(request);
@@ -568,6 +704,9 @@ async function handleSessionRefresh(request: Request, env: BookingEnv): Promise<
             body = JSON.parse(text);
         } catch {
             return json(400, { error: "Request body must be valid JSON" });
+        }
+        if ((body as { rotate?: unknown } | null)?.rotate === true) {
+            return handleSessionRotate(env, bearer);
         }
         const candidate = (body as { haloTokenPair?: unknown } | null)?.haloTokenPair;
         if (candidate !== undefined) {
@@ -675,6 +814,9 @@ async function handleExtend(request: Request, env: BookingEnv, rid: string): Pro
                 agentIds: updated.agentIds,
                 appointmentTypeId: updated.appointmentTypeId,
                 exp: newExp,
+                // Same payload shape as mint: series links keep their
+                // occurrences across renewal.
+                ...(updated.occurrences !== undefined ? { occurrences: updated.occurrences } : {}),
             },
             env.SECRET,
         );
@@ -691,7 +833,7 @@ async function handleExtend(request: Request, env: BookingEnv, rid: string): Pro
 }
 
 /**
- * Expire: drop the session (logout). Idempotent — a Bearer [REDACTED] always
+ * Expire: drop the session (logout). Idempotent — any presented id
  * reports ok so logout never fails on an already-dead session.
  */
 async function handleSessionExpire(request: Request, env: BookingEnv): Promise<Response> {
@@ -791,7 +933,14 @@ async function resolvePublicBooking(
             if (verified.payload.rid !== rid) {
                 return { ok: false, response: json(401, { error: "invalid-token" }) };
             }
-            await setBookingStatus(env.BOOKING_REQUESTS, rid, "expired").catch(() => undefined);
+            // The token's own expiry is not authority to expire the record:
+            // a superseded token from before an extend must not disable the
+            // still-valid renewed link. Flip only a record that is itself
+            // past exp; the presented token still answers 410 either way.
+            const stale = await getBookingRequest(env.BOOKING_REQUESTS, rid);
+            if (stale && stale.status === "pending" && stale.exp <= Math.floor(Date.now() / 1000)) {
+                await setBookingStatus(env.BOOKING_REQUESTS, rid, "expired").catch(() => undefined);
+            }
             return { ok: false, response: json(410, { error: "expired", rid }) };
         }
         return { ok: false, response: json(401, { error: "invalid-token" }) };
@@ -1049,6 +1198,14 @@ interface SeriesBookingSelection {
     occurrence: string | null;
 }
 
+/**
+ * Client-local calendar date (YYYY-MM-DD) of an instant, using the same
+ * offset convention as the slot engine (`local = utc + offset`).
+ */
+function clientLocalDate(startMs: number, utcOffsetMin: number): string {
+    return new Date(startMs + utcOffsetMin * 60_000).toISOString().slice(0, 10);
+}
+
 function parseSeriesBody(
     body: unknown,
 ):
@@ -1178,8 +1335,13 @@ async function handleBook(
         return context.response;
     }
     // Series redeem: a `bookings` array confirms N appointments best-effort
-    // with per-occurrence results. Its presence selects the series path.
+    // with per-occurrence results. Its presence selects the series path —
+    // but only on a series link: a single-book capability must not
+    // authorize multiple appointments on arbitrary dates.
     if (typeof body === "object" && body !== null && (body as BookBody).bookings !== undefined) {
+        if (context.record.occurrences === undefined) {
+            return json(400, { error: "invalid-request", rid });
+        }
         return handleSeriesBook(env, rid, context.record, body);
     }
     // Series links redeem as a series only: a single-slot body would burn the
@@ -1338,6 +1500,13 @@ async function handleSeriesBook(
     if (!parsed.ok) {
         return json(400, { error: parsed.error });
     }
+    // The capability selects the link, and the link selects the dates: no
+    // more selections than issued occurrences (routing already rejects
+    // series bodies on single-book links).
+    const issued = record.occurrences;
+    if (issued === undefined || parsed.value.bookings.length > issued.length) {
+        return json(400, { error: "invalid-request", rid });
+    }
     const client = haloClient(env);
     if (!client) {
         return json(503, { error: "booking-unavailable" });
@@ -1348,16 +1517,27 @@ async function handleSeriesBook(
         results[index] = seriesFailure(index, bookings[index], error);
     };
 
-    // Semantic pre-check (no Halo calls): membership + offered durations.
+    // Semantic pre-check (no Halo calls): membership + offered durations +
+    // occurrence binding. Each selection lands on exactly one issued
+    // occurrence: unique within the request, a member of the link's
+    // occurrence set, and matching the client-local date of its start. An
+    // omitted occurrence derives from the start date.
     const candidates: number[] = [];
+    const claimed = new Set<string>();
     bookings.forEach((selection, index) => {
         const durationMin = Math.round((selection.endMs - selection.startMs) / 60_000);
+        const derived = clientLocalDate(selection.startMs, utcOffsetMin);
+        const effective = selection.occurrence ?? derived;
         if (
             !record.agentIds.includes(selection.agentId) ||
-            !(ALLOWED_SLOT_DURATIONS as readonly number[]).includes(durationMin)
+            !(ALLOWED_SLOT_DURATIONS as readonly number[]).includes(durationMin) ||
+            (selection.occurrence !== null && selection.occurrence !== derived) ||
+            !issued.includes(effective) ||
+            claimed.has(effective)
         ) {
             fail(index, "invalid-slot");
         } else {
+            claimed.add(effective);
             candidates.push(index);
         }
     });
@@ -1393,6 +1573,15 @@ async function handleSeriesBook(
             results: results as SeriesItemResult[],
         });
     }
+    // Same cached directory the single-book path uses, so series
+    // validation honors per-agent custom schedules. Best-effort: a miss
+    // falls back to the 09:00-17:00 defaults.
+    const directory = await getAgentDirectory(env.BOOKING_REQUESTS, {
+        nowMs,
+        fetchAgents: () =>
+            withRefreshedHalo(env, rid, client, (accessToken) => client.getAgents(accessToken)),
+    });
+    const schedules = toAgentSchedules(directory ?? []);
     // Within-batch blocks: an accepted selection occupies its agent, so a
     // duplicate pick later in the same request reports slot-taken.
     const batchBusy: SlotBusyBlock[] = [];
@@ -1407,6 +1596,8 @@ async function handleSeriesBook(
             startMs: selection.startMs,
             endMs: selection.endMs,
             businessOffsetMin: record.businessOffsetMin,
+            schedules,
+            bufferMin: record.bufferMin,
         });
         if (!check.ok) {
             fail(index, check.reason === "taken" ? "slot-taken" : "invalid-slot");
