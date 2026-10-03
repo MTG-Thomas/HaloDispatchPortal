@@ -1,17 +1,57 @@
 import type { HaloTokens, HaloUser, AuthConfig } from "./types";
+import {
+    clearPkceRequest,
+    generateCodeChallenge,
+    generateCodeVerifier,
+    generateState,
+    loadPkceRequest,
+    savePkceRequest,
+} from "./pkce";
+import { isAllowedServerUrl } from "../../lib/server-url";
+
+/**
+ * Fail-closed guard: the auth server receives authorization codes and
+ * refresh grants, so it must always be a well-formed https URL, even if
+ * persisted config was tampered with outside the app. Custom hosts are
+ * allowed (self-hosted Halo); shared login links are allowlisted earlier.
+ */
+function isUsableAuthServer(authServer: string): boolean {
+    return (
+        isAllowedServerUrl(authServer, {
+            allowCustomHosts: true,
+            label: "Auth server",
+        })
+    );
+}
 
 // Token storage keys
 const TOKEN_STORAGE_KEY = "halo-dispatch-tokens";
 
-// Track processed authorization codes to prevent duplicates
+/**
+ * Clock-skew / early-expiry window. Tokens are treated as expired this far
+ * before their real expiry so refresh happens proactively instead of mid-request.
+ */
+export const TOKEN_EXPIRY_SKEW_MS = 30 * 1000;
+
+/**
+ * Bound for the processed authorization-code set. The set is pruned
+ * incrementally on insert (oldest first) instead of a module-scope timer,
+ * so importing this module never leaves a dangling setInterval behind.
+ */
+const MAX_PROCESSED_CODES = 100;
+
+// Track processed authorization codes to prevent duplicate exchanges.
 const processedCodes = new Set<string>();
 
-// Clean up old processed codes periodically (every 5 minutes)
-setInterval(() => {
-    if (processedCodes.size > 100) {
-        processedCodes.clear();
+function rememberProcessedCode(code: string): void {
+    if (processedCodes.size >= MAX_PROCESSED_CODES) {
+        const oldest = processedCodes.values().next();
+        if (!oldest.done) {
+            processedCodes.delete(oldest.value);
+        }
     }
-}, 5 * 60 * 1000);
+    processedCodes.add(code);
+}
 
 export function loadTokens(): HaloTokens | null {
     try {
@@ -20,14 +60,18 @@ export function loadTokens(): HaloTokens | null {
             return JSON.parse(stored);
         }
     } catch (error) {
-        console.error("Failed to parse stored tokens:", error);
+        console.error(
+            "Failed to parse stored tokens:",
+            error instanceof Error ? error.message : "Unknown error"
+        );
         clearTokens();
     }
     return null;
 }
 
 export function saveTokens(tokens: HaloTokens): void {
-    localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(tokens));
+    const stamped: HaloTokens = { ...tokens, obtained_at: Date.now() };
+    localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(stamped));
 }
 
 export function clearTokens(): void {
@@ -38,40 +82,108 @@ export function clearProcessedCodes(): void {
     processedCodes.clear();
 }
 
+/**
+ * Documented fallback: the Halo API subset used by this app exposes no
+ * current-user ("me") endpoint, and tenant field availability varies, so user
+ * identity cannot be resolved from the resource server here (see AGENTS.md:
+ * do not broaden the documented field subset without handling
+ * tenant-specific availability and validation). Returns a stable local
+ * session marker while a token set exists so auth state has a non-null user.
+ */
 export function getCurrentUser(): HaloUser | null {
     const tokens = loadTokens();
-    if (tokens) {
-        return {
-            id: "user",
-            username: "user",
-        };
+    if (!tokens?.access_token) {
+        return null;
     }
-    return null;
+    return {
+        id: "user",
+        username: "user",
+    };
+}
+
+/**
+ * Absolute expiry (epoch ms) for a token set, or null when the token age is
+ * unknown (e.g. persisted before obtained_at existed) or invalid.
+ */
+export function getTokenExpiresAt(tokens: HaloTokens): number | null {
+    if (
+        typeof tokens.obtained_at !== "number" ||
+        !Number.isFinite(tokens.obtained_at)
+    ) {
+        return null;
+    }
+    if (
+        typeof tokens.expires_in !== "number" ||
+        !Number.isFinite(tokens.expires_in) ||
+        tokens.expires_in <= 0
+    ) {
+        return null;
+    }
+    return tokens.obtained_at + tokens.expires_in * 1000;
+}
+
+/**
+ * True when tokens are missing, of unknown age, expired, or inside the skew
+ * window before expiry (i.e. a refresh should happen proactively).
+ */
+export function isTokenExpiringSoon(
+    tokens: HaloTokens | null = loadTokens()
+): boolean {
+    if (!tokens?.access_token) {
+        return true;
+    }
+    const expiresAt = getTokenExpiresAt(tokens);
+    if (expiresAt === null) {
+        return true;
+    }
+    return Date.now() >= expiresAt - TOKEN_EXPIRY_SKEW_MS;
 }
 
 export function isAuthenticated(): boolean {
-    const tokens = loadTokens();
-    if (!tokens) return false;
-
-    // Check if token is expired
-    const now = Date.now();
-    const expiresAt = now + tokens.expires_in * 1000;
-    return now < expiresAt;
+    return !isTokenExpiringSoon();
 }
 
-export function startAuth(config: AuthConfig): void {
+/**
+ * Ensure a fresh access token: no-op when the current one is outside the
+ * skew window, otherwise attempts a refresh. Returns true when a usable
+ * token set is stored afterwards.
+ */
+export async function ensureFreshToken(config: AuthConfig): Promise<boolean> {
+    const tokens = loadTokens();
+    if (!tokens?.refresh_token) {
+        return false;
+    }
+    if (!isTokenExpiringSoon(tokens)) {
+        return true;
+    }
+    return refreshToken(config);
+}
+
+export async function startAuth(config: AuthConfig): Promise<void> {
     // Validate required fields
     if (!config.authServer || !config.clientId || !config.redirectUri) {
         throw new Error(
             "Missing required configuration: authServer, clientId, or redirectUri"
         );
     }
+    if (!isUsableAuthServer(config.authServer)) {
+        throw new Error("Invalid auth server URL. Please reconfigure.");
+    }
+
+    // PKCE (S256) + state for the native-app Authorization Code flow.
+    const state = generateState();
+    const verifier = generateCodeVerifier();
+    const challenge = await generateCodeChallenge(verifier);
+    savePkceRequest({ state, verifier });
 
     const params = new URLSearchParams({
         client_id: config.clientId,
         response_type: "code",
         scope: "all:standard offline_access",
         redirect_uri: config.redirectUri,
+        state,
+        code_challenge: challenge,
+        code_challenge_method: "S256",
     });
 
     const authUrl = `${config.authServer}/authorize?${params.toString()}`;
@@ -80,26 +192,38 @@ export function startAuth(config: AuthConfig): void {
 
 export async function handleCallback(
     config: AuthConfig,
-    code: string
+    code: string,
+    state: string | null
 ): Promise<boolean> {
+    // Verify state before any token exchange; never log the values.
+    const pkceRequest = loadPkceRequest();
+    if (!state || !pkceRequest || state !== pkceRequest.state) {
+        console.warn(
+            "OAuth state mismatch: rejecting callback without token exchange."
+        );
+        clearPkceRequest();
+        return false;
+    }
+
+    // Check if this code has already been processed (single-flight guard).
+    if (processedCodes.has(code)) {
+        console.warn("Authorization code already processed, skipping.");
+        return false;
+    }
+
+    // Mark this code as being processed
+    rememberProcessedCode(code);
+
     try {
-        // Check if this code has already been processed
-        if (processedCodes.has(code)) {
-            console.warn(
-                "Authorization code already processed, skipping:",
-                code
-            );
-            return false;
-        }
-
-        // Mark this code as being processed
-        processedCodes.add(code);
-
         // Validate required fields
         if (!config.authServer || !config.clientId || !config.redirectUri) {
             throw new Error(
                 "Missing required configuration: authServer, clientId, or redirectUri"
             );
+        }
+        if (!isUsableAuthServer(config.authServer)) {
+            console.warn("Rejecting callback: invalid auth server URL.");
+            return false;
         }
 
         const tokenParams = new URLSearchParams({
@@ -107,6 +231,7 @@ export async function handleCallback(
             client_id: config.clientId,
             redirect_uri: config.redirectUri,
             code: code,
+            code_verifier: pkceRequest.verifier,
             scope: "all:standard offline_access",
         });
 
@@ -119,28 +244,28 @@ export async function handleCallback(
         });
 
         if (!tokenResponse.ok) {
-            let errorMessage = `Token request failed: ${tokenResponse.statusText}`;
-
-            try {
-                const errorData = await tokenResponse.text();
-                console.error("Token request error response:", errorData);
-                if (errorData) {
-                    errorMessage += ` - ${errorData}`;
-                }
-            } catch (e) {
-                console.error("Could not read error response:", e);
-            }
-
-            throw new Error(errorMessage);
+            // Log status only: token endpoint bodies can carry sensitive detail.
+            console.error(
+                "Token request failed:",
+                tokenResponse.status,
+                tokenResponse.statusText
+            );
+            return false;
         }
 
-        const tokens: HaloTokens = await tokenResponse.json();
+        const tokens = (await tokenResponse.json()) as HaloTokens;
         saveTokens(tokens);
 
         return true;
     } catch (error) {
-        console.error("OAuth callback error:", error);
+        console.error(
+            "OAuth callback failed:",
+            error instanceof Error ? error.message : "Unknown error"
+        );
         return false;
+    } finally {
+        // PKCE material is single-use: always clear it after the exchange.
+        clearPkceRequest();
     }
 }
 
@@ -149,6 +274,10 @@ export async function refreshToken(config: AuthConfig): Promise<boolean> {
         const tokens = loadTokens();
         if (!tokens?.refresh_token) {
             console.warn("No refresh token available");
+            return false;
+        }
+        if (!isUsableAuthServer(config.authServer)) {
+            console.warn("Rejecting refresh: invalid auth server URL.");
             return false;
         }
 
@@ -166,8 +295,12 @@ export async function refreshToken(config: AuthConfig): Promise<boolean> {
         });
 
         if (!response.ok) {
-            const errorText = await response.text();
-            console.error("Token refresh failed:", response.status, errorText);
+            // Log status only: token endpoint bodies can carry sensitive detail.
+            console.error(
+                "Token refresh failed:",
+                response.status,
+                response.statusText
+            );
 
             // If refresh token is invalid/expired, clear everything
             if (response.status === 400 || response.status === 401) {
@@ -175,26 +308,33 @@ export async function refreshToken(config: AuthConfig): Promise<boolean> {
                     "Refresh token is invalid/expired, clearing authentication"
                 );
                 clearTokens();
-                return false;
             }
-
-            throw new Error(`Token refresh failed: ${response.statusText}`);
+            return false;
         }
 
-        const newTokens: HaloTokens = await response.json();
-        saveTokens(newTokens);
+        const newTokens = (await response.json()) as HaloTokens;
+        // Some providers omit refresh_token on refresh; keep the old one then.
+        saveTokens({
+            ...newTokens,
+            refresh_token: newTokens.refresh_token || tokens.refresh_token,
+        });
         return true;
     } catch (error) {
-        console.error("Token refresh error:", error);
-        clearTokens();
+        // Network-level failure: keep stored tokens so a later retry or a
+        // fresh login can proceed; only definite invalid_grant clears above.
+        console.error(
+            "Token refresh failed:",
+            error instanceof Error ? error.message : "Unknown error"
+        );
         return false;
     }
 }
 
 export function logout(): void {
     clearTokens();
-    // Clear processed codes on logout
+    // Clear processed codes and any pending PKCE material on logout
     processedCodes.clear();
+    clearPkceRequest();
     // Redirect to login page
     if (window.location.pathname !== "/login") {
         window.location.href = "/login";

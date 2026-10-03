@@ -23,6 +23,7 @@ const AuthCallback: React.FC = () => {
       }
 
       const code = searchParams.get('code');
+      const state = searchParams.get('state');
       const error = searchParams.get('error');
 
 
@@ -40,12 +41,22 @@ const AuthCallback: React.FC = () => {
         return;
       }
 
+      if (!state) {
+        hasProcessed.current = true;
+        navigate('/login?error=state_mismatch', { replace: true });
+        return;
+      }
+
       hasProcessed.current = true;
       processingRef.current = true;
 
       try {
-        // Process the callback - this will update the auth state
-        await handleCallback(code);
+        // Process the callback - this will update the auth state.
+        // State is verified inside handleCallback; a mismatch fails closed.
+        const success = await handleCallback(code, state);
+        if (!success) {
+          navigate('/login?error=auth_failed', { replace: true });
+        }
       } finally {
         processingRef.current = false;
       }

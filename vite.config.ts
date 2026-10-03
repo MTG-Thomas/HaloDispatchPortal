@@ -1,59 +1,55 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
-import path from 'path'
+import { defineConfig, type Plugin } from "vitest/config";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import path from "path";
+
+/**
+ * Dev-only: strip the CSP meta tag from served index.html. The production
+ * bundle needs no inline scripts, but `vite dev` injects an inline React
+ * preamble and HMR client that script-src 'self' would block. Built output
+ * (and `vite preview`) keeps the policy.
+ */
+function stripCspMetaInDev(): Plugin {
+    return {
+        name: "strip-csp-meta-in-dev",
+        apply: "serve",
+        transformIndexHtml(html) {
+            return html.replace(
+                /<meta http-equiv="Content-Security-Policy"[^>]*>/,
+                "<!-- CSP meta stripped in dev (applies to built output) -->",
+            );
+        },
+    };
+}
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-    },
-  },
-  build: {
-    // Source maps for production debugging
-    sourcemap: false,
-
-    // Chunk size warning threshold (500kb)
-    chunkSizeWarningLimit: 500,
-
-    rollupOptions: {
-      output: {
-        // Conservative manual chunk splitting to avoid circular dependencies
-        manualChunks: (id) => {
-          // Only split large, stable libraries that rarely change
-          // Everything else stays together to avoid dependency issues
-
-          // React ecosystem - bundle everything React-related together
-          if (id.includes('node_modules/react') ||
-              id.includes('node_modules/react-dom') ||
-              id.includes('node_modules/react-router') ||
-              id.includes('node_modules/@radix-ui') ||
-              id.includes('node_modules/scheduler')) {
-            return 'vendor';
-          }
-
-          // Date utilities - large and stable
-          if (id.includes('node_modules/date-fns')) {
-            return 'vendor';
-          }
-
-          // Icons - large and stable
-          if (id.includes('node_modules/lucide-react')) {
-            return 'vendor';
-          }
-
-          // Everything else goes into vendor (no micro-chunking)
-          if (id.includes('node_modules')) {
-            return 'vendor';
-          }
+    plugins: [react(), tailwindcss(), stripCspMetaInDev()],
+    test: {
+        environment: "jsdom",
+        setupFiles: ["./src/test/setup.ts"],
+        globals: true,
+        include: ["src/**/*.{test,spec}.{ts,tsx}"],
+        coverage: {
+            provider: "v8",
+            reporter: ["text", "html"],
+            include: ["src/lib/**/*.ts", "src/services/**/*.ts", "src/stores/**/*.ts"],
         },
-      },
     },
+    resolve: {
+        alias: {
+            "@": path.resolve(__dirname, "./src"),
+        },
+    },
+    build: {
+        // Source maps for production debugging
+        sourcemap: false,
 
-    // Minification settings
-    minify: 'esbuild',
-    target: 'es2020',
-  },
-})
+        // Chunk size warning threshold (500kb)
+        chunkSizeWarningLimit: 500,
+
+        // Minification settings
+        minify: "esbuild",
+        target: "es2020",
+    },
+});

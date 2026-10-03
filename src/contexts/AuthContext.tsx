@@ -18,7 +18,7 @@ interface AuthContextType {
   isLoading: boolean;
   startAuth: () => Promise<void>;
   logout: () => void;
-  handleCallback: (code: string) => Promise<boolean>;
+  handleCallback: (code: string, state: string | null) => Promise<boolean>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -42,12 +42,28 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const navigate = useNavigate();
   const { config, isLoaded } = useConfig();
 
-  // Check authentication status when config is loaded
+  // Check authentication status when config is loaded, attempting one
+  // proactive refresh when tokens exist but are expired or near expiry.
   useEffect(() => {
     if (!isLoaded) return;
 
-    const checkAuth = () => {
-      const authenticated = authService.isAuthenticated();
+    const checkAuth = async () => {
+      let authenticated = authService.isAuthenticated();
+
+      if (
+        !authenticated &&
+        config.authServer &&
+        config.clientId &&
+        authService.loadTokens()?.refresh_token
+      ) {
+        const refreshed = await authService.ensureFreshToken({
+          authServer: config.authServer,
+          clientId: config.clientId,
+          redirectUri: config.redirectUri,
+        });
+        authenticated = refreshed && authService.isAuthenticated();
+      }
+
       setIsAuthenticated(authenticated);
 
       if (authenticated) {
@@ -61,23 +77,26 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     };
 
     checkAuth();
-  }, [isLoaded]);
+  }, [isLoaded, config.authServer, config.clientId, config.redirectUri]);
 
   const startAuth = async () => {
     try {
-      authService.startAuth({
+      await authService.startAuth({
         authServer: config.authServer,
         clientId: config.clientId,
         redirectUri: config.redirectUri,
       });
     } catch (error) {
-      console.error('Failed to start auth:', error);
+      console.error(
+        'Failed to start auth:',
+        error instanceof Error ? error.message : 'Unknown error'
+      );
       throw error;
     }
   };
 
   const handleCallback = useCallback(
-    async (code: string): Promise<boolean> => {
+    async (code: string, state: string | null): Promise<boolean> => {
       try {
         setIsLoading(true);
 
@@ -87,7 +106,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             clientId: config.clientId,
             redirectUri: config.redirectUri,
           },
-          code
+          code,
+          state
         );
 
         if (success) {
@@ -104,7 +124,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         setIsLoading(false);
         return success;
       } catch (error) {
-        console.error('Failed to handle auth callback:', error);
+        console.error(
+          'Failed to handle auth callback:',
+          error instanceof Error ? error.message : 'Unknown error'
+        );
         setIsLoading(false);
         return false;
       }

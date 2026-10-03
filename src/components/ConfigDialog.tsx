@@ -21,6 +21,12 @@ import {
 } from 'lucide-react';
 import { useConfig } from '@/hooks/useConfig';
 import type { HaloConfig } from '@/hooks/useConfig';
+import {
+  buildAuthServer,
+  buildResourceServer,
+  isValidTenantSlug,
+  validateServerUrl,
+} from '@/lib/server-url';
 
 export const ConfigDialog: React.FC = () => {
   const { config, isConfigured, saveConfig, resetConfig } = useConfig();
@@ -28,24 +34,64 @@ export const ConfigDialog: React.FC = () => {
   const [localConfig, setLocalConfig] = useState<HaloConfig>(config);
   const [showClientSecret, setShowClientSecret] = useState(false);
   const [urlCopied, setUrlCopied] = useState(false);
+  const [errors, setErrors] = useState<Partial<Record<keyof HaloConfig, string>>>({});
 
   // Update localConfig when config changes
   useEffect(() => {
     setLocalConfig(config);
   }, [config]);
 
+  const validateLocalConfig = (
+    candidate: HaloConfig
+  ): Partial<Record<keyof HaloConfig, string>> => {
+    const nextErrors: Partial<Record<keyof HaloConfig, string>> = {};
+    // Manually entered config may use self-hosted Halo instances, so custom
+    // hosts are allowed here — but the URL must still be well-formed https.
+    // Empty fields are permitted (the config is simply incomplete then).
+    if (candidate.tenant.trim() && !isValidTenantSlug(candidate.tenant)) {
+      nextErrors.tenant =
+        'Use letters, digits, and hyphens only (e.g. yourcompany).';
+    }
+    if (candidate.resourceServer.trim()) {
+      const error = validateServerUrl(candidate.resourceServer, {
+        allowCustomHosts: true,
+        label: 'Resource server',
+      });
+      if (error) {
+        nextErrors.resourceServer = error;
+      }
+    }
+    if (candidate.authServer.trim()) {
+      const error = validateServerUrl(candidate.authServer, {
+        allowCustomHosts: true,
+        label: 'Auth server',
+      });
+      if (error) {
+        nextErrors.authServer = error;
+      }
+    }
+    return nextErrors;
+  };
+
   const handleSave = () => {
+    const nextErrors = validateLocalConfig(localConfig);
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) {
+      return;
+    }
     saveConfig(localConfig);
     setIsOpen(false);
   };
 
   const handleCancel = () => {
     setLocalConfig(config);
+    setErrors({});
     setIsOpen(false);
   };
 
   const handleReset = () => {
     resetConfig();
+    setErrors({});
     setLocalConfig({
       tenant: '',
       authServer: '',
@@ -60,17 +106,31 @@ export const ConfigDialog: React.FC = () => {
 
     // Auto-fill Resource Server when tenant is entered
     if (field === 'tenant' && value.trim()) {
-      const resourceServer = `https://${value.trim()}.halopsa.com`;
+      const resourceServer = buildResourceServer(value);
       updates.resourceServer = resourceServer;
       // Also auto-fill Auth Server since we now have Resource Server
-      updates.authServer = `${resourceServer}/auth`;
+      updates.authServer = buildAuthServer(resourceServer);
     }
 
     // Auto-fill Auth Server when Resource Server is entered
     if (field === 'resourceServer' && value.trim()) {
-      updates.authServer = `${value.trim()}/auth`;
+      updates.authServer = buildAuthServer(value);
     }
 
+    setErrors((prev) => {
+      if (Object.keys(prev).length === 0) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[field];
+      if (updates.resourceServer !== undefined) {
+        delete next.resourceServer;
+      }
+      if (updates.authServer !== undefined) {
+        delete next.authServer;
+      }
+      return next;
+    });
     setLocalConfig((prev) => ({ ...prev, ...updates }));
   };
 
@@ -164,6 +224,14 @@ export const ConfigDialog: React.FC = () => {
               autofill Resource Server to be: https://tenant.halopsa.com
             </div>
           </div>
+          {errors.tenant && (
+            <div className="grid grid-cols-4 gap-4">
+              <div></div>
+              <div className="col-span-3 text-xs text-destructive">
+                {errors.tenant}
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-4 items-center gap-4">
             <Label htmlFor="resourceServer" className="text-right">
@@ -180,6 +248,14 @@ export const ConfigDialog: React.FC = () => {
               className="col-span-3"
             />
           </div>
+          {errors.resourceServer && (
+            <div className="grid grid-cols-4 gap-4">
+              <div></div>
+              <div className="col-span-3 text-xs text-destructive">
+                {errors.resourceServer}
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-4 items-center gap-4">
             <Label htmlFor="authServer" className="text-right">
@@ -194,6 +270,14 @@ export const ConfigDialog: React.FC = () => {
               className="col-span-3"
             />
           </div>
+          {errors.authServer && (
+            <div className="grid grid-cols-4 gap-4">
+              <div></div>
+              <div className="col-span-3 text-xs text-destructive">
+                {errors.authServer}
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-4 items-center gap-4">
             <Label htmlFor="clientId" className="text-right">
