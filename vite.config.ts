@@ -37,9 +37,11 @@ export default defineConfig({
     ],
     test: {
         environment: "jsdom",
+        // Worker BFF tests opt into node via a `// @vitest-environment node`
+        // pragma (vitest 5 has no environmentMatchGlobs); see worker/__tests__.
         setupFiles: ["./src/test/setup.ts"],
         globals: true,
-        include: ["src/**/*.{test,spec}.{ts,tsx}"],
+        include: ["src/**/*.{test,spec}.{ts,tsx}", "worker/**/*.test.ts"],
         coverage: {
             provider: "v8",
             reporter: ["text", "html"],

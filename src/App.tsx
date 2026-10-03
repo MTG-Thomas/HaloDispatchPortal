@@ -13,6 +13,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 const Login = lazy(() => import("./pages/Login"));
 const AuthCallback = lazy(() => import("./pages/AuthCallback"));
 const NotFound = lazy(() => import("./pages/NotFound"));
+const Book = lazy(() => import("./pages/Book"));
 const DispatchView = lazy(() =>
     import("./components/DispatchView").then((module) => ({ default: module.DispatchView })),
 );
@@ -39,6 +40,8 @@ function App() {
                                     />
                                     <Route path="/login" element={<Login />} />
                                     <Route path="/auth/callback" element={<AuthCallback />} />
+                                    {/* Public customer booking link: no login gate. */}
+                                    <Route path="/book/:token" element={<Book />} />
                                     <Route path="*" element={<NotFound />} />
                                 </Routes>
                             </Suspense>

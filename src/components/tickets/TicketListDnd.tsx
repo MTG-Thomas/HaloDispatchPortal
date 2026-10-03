@@ -1,9 +1,29 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { format } from "date-fns";
-import { AlertTriangle, Clock, Loader2, Pause, RotateCcw, Search } from "lucide-react";
+import {
+    AlertTriangle,
+    ArrowDown,
+    ArrowUp,
+    Clock,
+    Inbox,
+    Link2,
+    Loader2,
+    Pause,
+    RotateCcw,
+    Search,
+    Send,
+    X,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
 import {
     Select,
     SelectContent,
@@ -22,10 +42,23 @@ import { useRowWindowing } from "@/hooks/useRowWindowing";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { cn } from "@/lib/utils";
 import { computeSla } from "@/utils/enrich-ticket";
+import { scoreBreakdown, scoreTicket } from "@/lib/priority-score";
+import {
+    BookingTrackerError,
+    bookingDisplayStatus,
+    isBookingOpen,
+    mintBookingRequest,
+    type BookingRequestSummary,
+} from "@/lib/book-api";
+import { useBookingRequests } from "@/hooks/useBookingRequests";
+import { BookingStatusChip } from "@/components/booking/BookingStatusChip";
+import { OutstandingRequests } from "@/components/booking/OutstandingRequests";
 import type { EnrichedTicket } from "@/types/halo";
 import type { Ticket } from "@/types";
 import { draggable } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
+import { toast } from "sonner";
+import { loadTokens } from "@/services/auth/authService";
 import type { ColumnConfig } from "@/stores/preferencesStore";
 
 interface DragInput {
@@ -36,15 +69,32 @@ interface SortableHeaderProps {
     column: ColumnConfig;
     onReorder: (draggedId: string, targetId: string) => void;
     onResize: (columnId: string, width: number) => void;
+    sortable?: boolean;
+    sortDirection?: "asc" | "desc" | null;
+    onSort?: (columnId: string) => void;
 }
 
 interface DraggableTicketRowProps {
     ticket: EnrichedTicket;
     visibleColumns: ColumnConfig[];
     renderCell: (column: ColumnConfig, ticket: EnrichedTicket) => React.ReactNode;
+    booking?: BookingRequestSummary;
+    bookingBusy: boolean;
+    onBookingResend: (summary: BookingRequestSummary) => void;
+    onBookingCancel: (summary: BookingRequestSummary) => void;
+    onBookingMinted: () => void;
 }
 
-function DraggableTicketRow({ ticket, visibleColumns, renderCell }: DraggableTicketRowProps) {
+function DraggableTicketRow({
+    ticket,
+    visibleColumns,
+    renderCell,
+    booking,
+    bookingBusy,
+    onBookingResend,
+    onBookingCancel,
+    onBookingMinted,
+}: DraggableTicketRowProps) {
     // Convert EnrichedTicket to Ticket format for drag and drop
     const dragTicket: Ticket = {
         id: ticket.id.toString(),
@@ -88,11 +138,28 @@ function DraggableTicketRow({ ticket, visibleColumns, renderCell }: DraggableTic
                     {renderCell(column, ticket)}
                 </td>
             ))}
+            <td className="px-3 py-2 text-right whitespace-nowrap">
+                <BookingCell
+                    ticket={ticket}
+                    summary={booking}
+                    busy={bookingBusy}
+                    onResend={onBookingResend}
+                    onCancel={onBookingCancel}
+                    onMinted={onBookingMinted}
+                />
+            </td>
         </tr>
     );
 }
 
-function SortableHeader({ column, onReorder, onResize }: SortableHeaderProps) {
+function SortableHeader({
+    column,
+    onReorder,
+    onResize,
+    sortable = false,
+    sortDirection = null,
+    onSort,
+}: SortableHeaderProps) {
     const headerRef = useRef<HTMLTableCellElement>(null);
     const resizeHandleRef = useRef<HTMLDivElement>(null);
     const [isDragging, setIsDragging] = useState(false);
@@ -207,10 +274,19 @@ function SortableHeader({ column, onReorder, onResize }: SortableHeaderProps) {
                 isDraggedOver && "bg-primary/20 border-l-2 border-r-2 border-primary",
                 column.isFixed && "bg-muted/70",
                 !column.isFixed && "cursor-grab active:cursor-grabbing",
+                sortable && "cursor-pointer select-none",
             )}
+            onClick={sortable ? () => onSort?.(column.id) : undefined}
+            title={sortable ? "Click to sort by dispatch score" : undefined}
         >
             <div className="flex items-center gap-1">
                 <span className={cn(isDragging && "opacity-50")}>{column.label}</span>
+                {sortable && sortDirection === "desc" && (
+                    <ArrowDown className="h-3 w-3 flex-shrink-0" aria-hidden />
+                )}
+                {sortable && sortDirection === "asc" && (
+                    <ArrowUp className="h-3 w-3 flex-shrink-0" aria-hidden />
+                )}
             </div>
 
             {/* Resize Handle */}
@@ -275,6 +351,168 @@ function SlaCell({ ticket, now }: { ticket: EnrichedTicket; now: Date }) {
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
+/** Column id whose header click sorts by dispatch priority score. */
+const SCORE_SORT_COLUMN_ID = "priority";
+
+interface SortState {
+    columnId: string;
+    direction: "asc" | "desc";
+}
+
+/**
+ * Halo priority chip plus the client-side dispatch score badge. The badge
+ * title carries the score breakdown (SLA / age / staleness / priority).
+ */
+function PriorityCell({ ticket, now }: { ticket: EnrichedTicket; now: Date }) {
+    const breakdown = scoreBreakdown(ticket, now);
+    const title =
+        `Dispatch score ${breakdown.total}/100 — ` +
+        `SLA ${Math.round(breakdown.sla)}, age ${Math.round(breakdown.age)}, ` +
+        `staleness ${Math.round(breakdown.staleness)}, ` +
+        `priority ${Math.round(breakdown.priorityBoost)}`;
+
+    return (
+        <div className="flex items-center gap-1.5 whitespace-nowrap">
+            {ticket.priority ? (
+                <>
+                    <div
+                        className="w-3 h-3 rounded-sm border flex-shrink-0"
+                        style={{ backgroundColor: ticket.priority.colour || "#cccccc" }}
+                        title={ticket.priority.name}
+                    />
+                    <span className="text-xs">{ticket.priority.name}</span>
+                </>
+            ) : (
+                <span className="text-xs text-muted-foreground">No priority</span>
+            )}
+            <Badge variant="secondary" className="text-xs tabular-nums" title={title}>
+                {breakdown.total}
+            </Badge>
+        </div>
+    );
+}
+
+/**
+ * Per-row booking-link action: mints a link via the Worker BFF and copies the
+ * absolute `/book/<token>` URL. Uses the ticket's assigned agent when set,
+ * else every active agent; appointment type defaults to the first loaded.
+ */
+function BookingLinkButton({ ticket, onMinted }: { ticket: EnrichedTicket; onMinted: () => void }) {
+    const { agents, appointmentTypes } = useDispatchStore();
+    const [busy, setBusy] = useState(false);
+
+    const copyLink = async () => {
+        const tokens = loadTokens();
+        if (!tokens?.access_token || !tokens?.refresh_token) {
+            toast.error("Sign in to Halo before creating a booking link.");
+            return;
+        }
+        const agentIds =
+            ticket.agent_id > 0
+                ? [ticket.agent_id]
+                : agents.filter((agent) => agent.isActive).map((agent) => agent.id);
+        if (agentIds.length === 0) {
+            toast.error("No agents available for this booking link.");
+            return;
+        }
+        const appointmentTypeId = appointmentTypes[0]?.id;
+        if (!appointmentTypeId) {
+            toast.error("No appointment types loaded.");
+            return;
+        }
+        setBusy(true);
+        try {
+            const { token } = await mintBookingRequest({
+                ticketId: ticket.id,
+                agentIds,
+                appointmentTypeId,
+                haloTokenPair: tokens,
+            });
+            await navigator.clipboard.writeText(`${window.location.origin}/book/${token}`);
+            toast.success("Booking link copied to clipboard.");
+            onMinted();
+        } catch (error) {
+            toast.error(
+                error instanceof BookingTrackerError
+                    ? error.message
+                    : "Failed to create booking link.",
+            );
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return (
+        <Button
+            variant="ghost"
+            size="icon"
+            onClick={copyLink}
+            disabled={busy}
+            title="Copy booking link"
+            aria-label={`Copy booking link for ticket ${ticket.id}`}
+        >
+            {busy ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            ) : (
+                <Link2 className="h-4 w-4" aria-hidden />
+            )}
+        </Button>
+    );
+}
+
+interface BookingCellProps {
+    ticket: EnrichedTicket;
+    summary?: BookingRequestSummary;
+    busy: boolean;
+    onResend: (summary: BookingRequestSummary) => void;
+    onCancel: (summary: BookingRequestSummary) => void;
+    onMinted: () => void;
+}
+
+/**
+ * Actions cell: the tracking chip (when this ticket has a request) plus
+ * resend/cancel. Cancel is open-only; resend also covers expired
+ * (resend-as-new). Booked/cancelled rows show the chip alone.
+ */
+function BookingCell({ ticket, summary, busy, onResend, onCancel, onMinted }: BookingCellProps) {
+    const display = summary ? bookingDisplayStatus(summary) : null;
+    const canCancel = summary && display !== null && isBookingOpen(summary);
+    const canResend = summary && (isBookingOpen(summary) || display === "expired");
+
+    return (
+        <div className="flex items-center justify-end gap-1">
+            {summary && (
+                <BookingStatusChip summary={summary} testId={`booking-status-${ticket.id}`} />
+            )}
+            {canResend && (
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => onResend(summary)}
+                    disabled={busy}
+                    title="Resend booking link (invalidates the old one)"
+                    aria-label={`Resend booking link for ticket ${ticket.id}`}
+                >
+                    <Send className="h-4 w-4" aria-hidden />
+                </Button>
+            )}
+            {canCancel && (
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => onCancel(summary)}
+                    disabled={busy}
+                    title="Cancel booking request"
+                    aria-label={`Cancel booking request for ticket ${ticket.id}`}
+                >
+                    <X className="h-4 w-4" aria-hidden />
+                </Button>
+            )}
+            <BookingLinkButton ticket={ticket} onMinted={onMinted} />
+        </div>
+    );
+}
+
 /**
  * TicketList Component with Drag-and-Drop Column Reordering
  */
@@ -298,8 +536,40 @@ export function TicketList() {
     const { ticketListColumns, setTicketListColumns, setColumnWidth, resetColumns } =
         usePreferencesStore();
     const [searchTerm, setSearchTerm] = useState("");
+    const [sort, setSort] = useState<SortState | null>(null);
+    const [queueOpen, setQueueOpen] = useState(false);
     // Single ticking clock shared by every SLA cell (re-renders once a minute).
     const now = useNow(60_000);
+    // Dispatcher tracking: latest booking request per ticket (chips) plus the
+    // open count for the queue button. Loads silently; list failure only
+    // surfaces inside the queue dialog, never over the ticket table.
+    const booking = useBookingRequests();
+    const openBookingCount = useMemo(
+        () => booking.requests.filter((row) => isBookingOpen(row)).length,
+        [booking.requests],
+    );
+
+    const handleBookingResend = async (summary: BookingRequestSummary) => {
+        try {
+            const { token, oldInvalidated } = await booking.resend(summary);
+            await navigator.clipboard.writeText(`${window.location.origin}/book/${token}`);
+            toast.success("Fresh booking link copied to clipboard.");
+            if (!oldInvalidated) {
+                toast.warning("The old link is still live — cancel it from the queue.");
+            }
+        } catch {
+            toast.error("Failed to resend booking link.");
+        }
+    };
+
+    const handleBookingCancel = async (summary: BookingRequestSummary) => {
+        try {
+            await booking.cancel(summary.rid);
+            toast.success(`Booking request for ticket ${summary.ticketId} cancelled.`);
+        } catch {
+            toast.error("Failed to cancel booking request.");
+        }
+    };
 
     // Show list column only if multiple lists are selected
     const showListColumn = selectedListIds.length > 1;
@@ -334,22 +604,42 @@ export function TicketList() {
         });
     }, [haloTickets, searchTerm]);
 
+    // Sort by dispatch priority score when the Priority header was clicked.
+    // Id tiebreak keeps the order deterministic for equal scores.
+    const sortedTickets = useMemo(() => {
+        if (sort?.columnId !== SCORE_SORT_COLUMN_ID) return filteredTickets;
+        const factor = sort.direction === "desc" ? -1 : 1;
+        return [...filteredTickets].sort((a, b) => {
+            const diff = scoreTicket(a, now) - scoreTicket(b, now);
+            return diff !== 0 ? diff * factor : a.id - b.id;
+        });
+    }, [filteredTickets, sort, now]);
+
     // Calculate total pages
     const totalPages = Math.ceil(totalRecords / pageSize);
 
     // Chunked rendering for long pages: first rows mount fast, the rest stream
-    // in as the sentinel scrolls into view. Resets on page/search/list change
+    // in as the sentinel scrolls into view. Resets on page/search/list/sort change
     // but deliberately NOT on background refresh (preserves scroll position).
     const {
         visibleCount,
         sentinelRef,
         reset: resetWindowing,
-    } = useRowWindowing(filteredTickets.length);
+    } = useRowWindowing(sortedTickets.length);
     useEffect(() => {
         resetWindowing();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currentPage, searchTerm, selectedListIds]);
-    const visibleTickets = filteredTickets.slice(0, visibleCount);
+    }, [currentPage, searchTerm, selectedListIds, sort]);
+    const visibleTickets = sortedTickets.slice(0, visibleCount);
+
+    // Header-click sort: first click sorts highest score first, then toggles.
+    const handleSort = (columnId: string) => {
+        setSort((prev) =>
+            prev?.columnId === columnId
+                ? { columnId, direction: prev.direction === "desc" ? "asc" : "desc" }
+                : { columnId, direction: "desc" },
+        );
+    };
 
     // Calculate table width based on whether columns have custom widths
     const tableStyle = useMemo(() => {
@@ -424,18 +714,7 @@ export function TicketList() {
                 return <SlaCell ticket={ticket} now={now} />;
 
             case "priority":
-                return ticket.priority ? (
-                    <div className="flex items-center gap-1.5 whitespace-nowrap">
-                        <div
-                            className="w-3 h-3 rounded-sm border flex-shrink-0"
-                            style={{ backgroundColor: ticket.priority.colour || "#cccccc" }}
-                            title={ticket.priority.name}
-                        />
-                        <span className="text-xs">{ticket.priority.name}</span>
-                    </div>
-                ) : (
-                    <span className="text-xs text-muted-foreground">No priority</span>
-                );
+                return <PriorityCell ticket={ticket} now={now} />;
 
             case "team":
                 return <span className="text-xs">{ticket.team}</span>;
@@ -546,6 +825,21 @@ export function TicketList() {
                                 <RotateCcw className="h-4 w-4 mr-2" />
                                 Reset Columns
                             </Button>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setQueueOpen(true)}
+                                title="Outstanding booking requests"
+                                aria-label="Open booking requests queue"
+                            >
+                                <Inbox className="h-4 w-4 mr-2" aria-hidden />
+                                Requests
+                                {openBookingCount > 0 && (
+                                    <Badge variant="secondary" className="ml-1 tabular-nums">
+                                        {openBookingCount}
+                                    </Badge>
+                                )}
+                            </Button>
                             <div className="ml-auto flex items-center gap-2">
                                 {ticketsRefreshing && (
                                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -612,15 +906,23 @@ export function TicketList() {
                                             column={column}
                                             onReorder={handleReorder}
                                             onResize={setColumnWidth}
+                                            sortable={column.id === SCORE_SORT_COLUMN_ID}
+                                            sortDirection={
+                                                sort?.columnId === column.id ? sort.direction : null
+                                            }
+                                            onSort={handleSort}
                                         />
                                     ))}
+                                    <th className="px-3 py-2 text-right font-medium text-xs whitespace-nowrap bg-muted/50">
+                                        Actions
+                                    </th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {filteredTickets.length === 0 ? (
+                                {sortedTickets.length === 0 ? (
                                     <tr>
                                         <td
-                                            colSpan={visibleColumns.length}
+                                            colSpan={visibleColumns.length + 1}
                                             className="px-3 py-8 text-center text-muted-foreground"
                                         >
                                             {searchTerm
@@ -636,12 +938,21 @@ export function TicketList() {
                                                 ticket={ticket}
                                                 visibleColumns={visibleColumns}
                                                 renderCell={renderCell}
+                                                booking={booking.byTicket.get(ticket.id)}
+                                                bookingBusy={
+                                                    booking.busyRid !== null &&
+                                                    booking.busyRid ===
+                                                        booking.byTicket.get(ticket.id)?.rid
+                                                }
+                                                onBookingResend={handleBookingResend}
+                                                onBookingCancel={handleBookingCancel}
+                                                onBookingMinted={() => void booking.refresh()}
                                             />
                                         ))}
-                                        {visibleCount < filteredTickets.length && (
+                                        {visibleCount < sortedTickets.length && (
                                             <tr ref={sentinelRef}>
                                                 <td
-                                                    colSpan={visibleColumns.length}
+                                                    colSpan={visibleColumns.length + 1}
                                                     className="px-3 py-4 text-center text-muted-foreground"
                                                 >
                                                     <Loader2
@@ -650,7 +961,7 @@ export function TicketList() {
                                                     />
                                                     <span className="text-xs">
                                                         Showing {visibleCount} of{" "}
-                                                        {filteredTickets.length} — scroll for more
+                                                        {sortedTickets.length} — scroll for more
                                                     </span>
                                                 </td>
                                             </tr>
@@ -673,6 +984,19 @@ export function TicketList() {
                     />
                 </div>
             )}
+
+            <Dialog open={queueOpen} onOpenChange={setQueueOpen}>
+                <DialogContent className="sm:max-w-[720px]">
+                    <DialogHeader>
+                        <DialogTitle>Booking requests</DialogTitle>
+                        <DialogDescription>
+                            Links you minted, open first. Resend copies a fresh link and invalidates
+                            the old one.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <OutstandingRequests tracker={booking} />
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }

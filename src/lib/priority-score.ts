@@ -1,0 +1,141 @@
+/**
+ * Dispatch priority scoring (client-only, no API calls).
+ *
+ * Formula — scoreTicket() returns an integer 0-100, the sum of:
+ *
+ *   SLA        (0-40): overdue 40, warning 25, ok 10, on-hold / excluded /
+ *                      no fix-by date 0. State comes from the existing
+ *                      computeSla() in src/utils/enrich-ticket.ts.
+ *   Age        (0-25): log scale on dateoccurred, saturating at 7 days:
+ *                      25 * ln(1 + ageDays) / ln(1 + 7).
+ *   Staleness  (0-20): linear on hours since lastactiondate, saturating
+ *                      at 48h: 20 * min(1, hoursSinceAction / 48).
+ *   Priority   (0-15): boost from priority_id via DEFAULT_PRIORITY_BOOST_MAP.
+ *
+ * Tuning per tenant: adjust PRIORITY_SCORE_WEIGHTS and
+ * DEFAULT_PRIORITY_BOOST_MAP below (Halo priority ids differ per tenant;
+ * unknown ids score 0). Missing/invalid dates contribute 0 for their
+ * component. The Halo "1899-12-30" sentinel counts as no date.
+ */
+
+import { computeSla } from "@/utils/enrich-ticket";
+
+/** Tunable weights and saturation points for scoreTicket(). */
+export const PRIORITY_SCORE_WEIGHTS = {
+    /** Max total for the SLA component. */
+    slaMax: 40,
+    /** SLA points when computeSla() reports overdue. */
+    slaOverdue: 40,
+    /** SLA points when computeSla() reports warning (<2h left). */
+    slaWarning: 25,
+    /** SLA points when computeSla() reports ok with a real fix-by date. */
+    slaOk: 10,
+    /** SLA points for on-hold, SLA-excluded, or missing fix-by date. */
+    slaNone: 0,
+    /** Max total for the age component. */
+    ageMax: 25,
+    /** Age in days at which the age component saturates. */
+    ageSaturationDays: 7,
+    /** Max total for the staleness component. */
+    stalenessMax: 20,
+    /** Hours since last action at which staleness saturates. */
+    stalenessSaturationHours: 48,
+    /** Max total for the priority-boost component. */
+    priorityBoostMax: 15,
+} as const;
+
+/**
+ * Default boost (0-15) per Halo priority_id. Halo's default priorities are
+ * 1 (highest) through 4 (lowest); tenants that renumbered priorities should
+ * override this map. Unknown ids score 0.
+ */
+export const DEFAULT_PRIORITY_BOOST_MAP: Record<number, number> = {
+    1: 15,
+    2: 10,
+    3: 5,
+    4: 0,
+};
+
+/** Minimum ticket shape needed for scoring (Ticket and EnrichedTicket both satisfy this). */
+export interface ScorableTicket {
+    dateoccurred: string;
+    lastactiondate: string;
+    fixbydate: string | null | undefined;
+    excludefromsla: boolean;
+    onhold: boolean;
+    priority_id: number;
+}
+
+export interface PriorityScoreBreakdown {
+    sla: number;
+    age: number;
+    staleness: number;
+    priorityBoost: number;
+    total: number;
+}
+
+const NULL_DATE_PREFIX = "1899-12-30";
+const MS_PER_HOUR = 1000 * 60 * 60;
+const MS_PER_DAY = MS_PER_HOUR * 24;
+
+function parseDate(value: string | null | undefined): Date | null {
+    if (!value || value.startsWith(NULL_DATE_PREFIX)) return null;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function scoreSla(ticket: ScorableTicket, now: Date): number {
+    const { slaOverdue, slaWarning, slaOk, slaNone } = PRIORITY_SCORE_WEIGHTS;
+    if (ticket.excludefromsla || ticket.onhold) return slaNone;
+    if (!parseDate(ticket.fixbydate)) return slaNone;
+    const { slaState } = computeSla(ticket.fixbydate, ticket.excludefromsla, ticket.onhold, now);
+    switch (slaState) {
+        case "overdue":
+            return slaOverdue;
+        case "warning":
+            return slaWarning;
+        case "ok":
+            return slaOk;
+        default:
+            return slaNone;
+    }
+}
+
+function scoreAge(ticket: ScorableTicket, now: Date): number {
+    const { ageMax, ageSaturationDays } = PRIORITY_SCORE_WEIGHTS;
+    const occurred = parseDate(ticket.dateoccurred);
+    if (!occurred) return 0;
+    const ageDays = Math.max(0, (now.getTime() - occurred.getTime()) / MS_PER_DAY);
+    const ratio = Math.log1p(ageDays) / Math.log1p(ageSaturationDays);
+    return ageMax * Math.min(1, ratio);
+}
+
+function scoreStaleness(ticket: ScorableTicket, now: Date): number {
+    const { stalenessMax, stalenessSaturationHours } = PRIORITY_SCORE_WEIGHTS;
+    const lastAction = parseDate(ticket.lastactiondate);
+    if (!lastAction) return 0;
+    const hours = Math.max(0, (now.getTime() - lastAction.getTime()) / MS_PER_HOUR);
+    return stalenessMax * Math.min(1, hours / stalenessSaturationHours);
+}
+
+function scorePriorityBoost(ticket: ScorableTicket): number {
+    return DEFAULT_PRIORITY_BOOST_MAP[ticket.priority_id] ?? 0;
+}
+
+/** Full component breakdown plus the rounded 0-100 total. */
+export function scoreBreakdown(
+    ticket: ScorableTicket,
+    now: Date = new Date(),
+): PriorityScoreBreakdown {
+    const sla = scoreSla(ticket, now);
+    const age = scoreAge(ticket, now);
+    const staleness = scoreStaleness(ticket, now);
+    const priorityBoost = scorePriorityBoost(ticket);
+    const total = Math.max(0, Math.min(100, Math.round(sla + age + staleness + priorityBoost)));
+    return { sla, age, staleness, priorityBoost, total };
+}
+
+/** Dispatch priority score, 0-100 (higher = needs attention sooner). */
+export function scoreTicket(ticket: ScorableTicket, now: Date = new Date()): number {
+    return scoreBreakdown(ticket, now).total;
+}
