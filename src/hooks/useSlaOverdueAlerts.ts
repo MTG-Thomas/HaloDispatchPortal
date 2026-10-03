@@ -6,6 +6,10 @@ function notificationsAvailable(): boolean {
     return typeof Notification !== "undefined";
 }
 
+function sameTicketIds(a: readonly EnrichedTicket[], b: readonly EnrichedTicket[]): boolean {
+    return a.length === b.length && a.every((ticket, index) => ticket.id === b[index].id);
+}
+
 /**
  * Opt-in browser notifications for tickets that newly breach SLA.
  *
@@ -30,7 +34,9 @@ export function useSlaOverdueAlerts(
         }
         const newly = detectNewlyOverdue(prevIdsRef.current, tickets, now);
         prevIdsRef.current = overdueIds(tickets, now);
-        setNewlyOverdue(newly);
+        // Bail out on unchanged ids: the effect re-runs whenever `now`
+        // identity churns, and an unconditional fresh array would loop.
+        setNewlyOverdue((prev) => (sameTicketIds(prev, newly) ? prev : newly));
         if (enabled && newly.length > 0 && notificationsAvailable()) {
             if (Notification.permission === "granted") {
                 for (const ticket of newly) {

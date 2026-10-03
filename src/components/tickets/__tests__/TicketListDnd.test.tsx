@@ -5,8 +5,12 @@ import { useDispatchStore } from "@/stores/useDispatchStore";
 import { DEFAULT_PRIORITY_BOOST_MAP, scoreBreakdown } from "@/lib/priority-score";
 import type { EnrichedTicket, TicketPriority } from "@/types/halo";
 
+const MOCK_NOW = new Date("2026-10-03T12:00:00.000Z");
+
 vi.mock("@/hooks/useNow", () => ({
-    useNow: () => new Date("2026-10-03T12:00:00.000Z"),
+    // Stable reference like the real hook (fresh Date per render would churn
+    // every `now`-keyed effect in the tree).
+    useNow: () => MOCK_NOW,
 }));
 
 const NOW = new Date("2026-10-03T12:00:00.000Z");

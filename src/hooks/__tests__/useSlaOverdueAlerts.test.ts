@@ -80,6 +80,20 @@ describe("useSlaOverdueAlerts", () => {
         expect(instances).toHaveLength(1);
     });
 
+    it("keeps a stable result when `now` identity churns (no render loop)", () => {
+        stubNotifications();
+        const tickets = [ticket({ id: 1, fixbydate: "2026-10-01T12:00:00.000Z" })];
+        const { result, rerender } = renderHook(
+            ({ now }) => useSlaOverdueAlerts(tickets, now, true),
+            { initialProps: { now: NOW } },
+        );
+        const first = result.current;
+        rerender({ now: new Date(NOW) });
+        rerender({ now: new Date(NOW) });
+        rerender({ now: new Date(NOW) });
+        expect(result.current).toBe(first);
+    });
+
     it("tracks transitions without notifying when disabled or unsupported", () => {
         stubNotifications();
         const tickets = [ticket({ id: 3, fixbydate: "2026-10-03T12:30:00.000Z" })];
