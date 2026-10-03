@@ -19,8 +19,7 @@ function makeToken(rid: string): string {
 }
 
 const TOKEN = makeToken("rid-series-1");
-const ACCESS = "test-access-token";
-const PAIR = { access_token: "a", refresh_token: "r" };
+const SESSION = "test-session-id";
 
 function mockFetchOnce(status: number, body: unknown) {
     const impl = vi.fn(async () => new Response(JSON.stringify(body), { status }));
@@ -40,6 +39,7 @@ function summary(overrides: Partial<BookingRequestSummary> = {}): BookingRequest
         exp: 9_999_999_999,
         clickedAt: null,
         bookedAppointmentId: null,
+        viewCount: 0,
         ...overrides,
     };
 }
@@ -73,7 +73,7 @@ describe("series mint", () => {
             ticketId: 42,
             agentIds: [7],
             appointmentTypeId: 3,
-            haloTokenPair: PAIR,
+            sessionId: SESSION,
             occurrences: ["2026-10-06", "2026-10-13"],
         });
         const [, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
@@ -92,7 +92,7 @@ describe("series mint", () => {
             ticketId: 42,
             agentIds: [7],
             appointmentTypeId: 3,
-            haloTokenPair: PAIR,
+            sessionId: SESSION,
         });
         const [, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
         expect(JSON.parse(init.body as string)).not.toHaveProperty("occurrences");
@@ -108,8 +108,7 @@ describe("series mint", () => {
         vi.stubGlobal("fetch", impl);
         await resendBookingRequest({
             previous: summary({ occurrences: ["2026-10-06", "2026-10-13"] }),
-            haloTokenPair: PAIR,
-            accessToken: ACCESS,
+            sessionId: SESSION,
         });
         const [, mintInit] = impl.mock.calls[0] as unknown as [string, RequestInit];
         expect(JSON.parse(mintInit.body as string)).toMatchObject({
@@ -243,7 +242,7 @@ describe("series tracking rows", () => {
             bookedAppointmentIds: [701, 702],
         };
         mockFetchOnce(200, { requests: [row] });
-        const [parsed] = await fetchBookingRequests(ACCESS);
+        const [parsed] = await fetchBookingRequests(SESSION);
         expect(parsed).toEqual(row);
     });
 
@@ -251,7 +250,7 @@ describe("series tracking rows", () => {
         mockFetchOnce(200, {
             requests: [{ ...summary(), occurrences: "nope", bookedAppointmentIds: [701, "x"] }],
         });
-        const [parsed] = await fetchBookingRequests(ACCESS);
+        const [parsed] = await fetchBookingRequests(SESSION);
         expect(parsed).toEqual(summary());
     });
 });
