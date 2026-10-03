@@ -101,10 +101,37 @@ export interface NewBookingRequest {
 /** Booking links live 7 days; KV records expire with them. */
 export const BOOKING_REQUEST_TTL_SECONDS = 7 * 24 * 60 * 60;
 
+/** Fresh links from extend default to another full TTL. */
+export const BOOKING_EXTEND_DEFAULT_DAYS = 7;
+export const BOOKING_EXTEND_MAX_DAYS = 30;
+
 export const BOOKING_REQUEST_PREFIX = "book:req:";
 
 export function bookingRequestKey(rid: string): string {
     return `${BOOKING_REQUEST_PREFIX}${rid}`;
+}
+
+/** Customer/dispatcher lifecycle events recorded per booking request. */
+export type BookingAuditEventType = "view" | "book" | "cancel" | "extend";
+
+export interface BookingAuditEvent {
+    type: BookingAuditEventType;
+    /** ISO timestamp of the event. */
+    at: string;
+    /**
+     * Optional machine-readable detail: the Halo appointment id for `book`,
+     * the new ISO expiry for `extend`.
+     */
+    detail?: string;
+}
+
+export const BOOKING_AUDIT_PREFIX = "book:audit:";
+
+/** Cap so one hot link cannot grow its audit value without bound. */
+export const MAX_AUDIT_EVENTS = 500;
+
+export function bookingAuditKey(rid: string): string {
+    return `${BOOKING_AUDIT_PREFIX}${rid}`;
 }
 
 const textEncoder = new TextEncoder();
@@ -345,6 +372,89 @@ export async function markBookingBooked(
     };
     await kv.put(key, JSON.stringify(updated), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
     return updated;
+}
+
+/**
+ * Renew a pending request's expiry (extend). Terminal records stay
+ * immutable — extend a live link, resend an expired one. Refreshes the KV
+ * TTL so the renewed link lives its full term. Throws `not-found` /
+ * `illegal-transition`.
+ */
+export async function extendBookingExpiry(
+    kv: KeyValueClient,
+    rid: string,
+    newExp: number,
+    now: Date = new Date(),
+): Promise<BookingRequestRecord> {
+    const key = bookingRequestKey(rid);
+    const raw = await kv.get(key);
+    if (raw === null) {
+        throw new BookingStateError("not-found", `Booking request ${rid} not found`);
+    }
+    const record = parseRecord(raw);
+    if (record.status !== "pending") {
+        throw new BookingStateError(
+            "illegal-transition",
+            `Cannot extend booking request ${rid} from ${record.status}`,
+        );
+    }
+    const updated: BookingRequestRecord = {
+        ...record,
+        exp: newExp,
+        updatedAt: now.toISOString(),
+    };
+    await kv.put(key, JSON.stringify(updated), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
+    return updated;
+}
+
+function parseAuditEvents(raw: string | null): BookingAuditEvent[] {
+    if (raw === null) {
+        return [];
+    }
+    try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (!Array.isArray(parsed)) {
+            return [];
+        }
+        return parsed.filter(
+            (event): event is BookingAuditEvent =>
+                typeof event === "object" &&
+                event !== null &&
+                typeof (event as BookingAuditEvent).type === "string" &&
+                typeof (event as BookingAuditEvent).at === "string",
+        );
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Append one lifecycle event to the request's audit trail, oldest first.
+ * Corrupt prior values reset to a fresh trail rather than failing the
+ * booking flow; the trail is capped at {@link MAX_AUDIT_EVENTS}.
+ */
+export async function appendAuditEvent(
+    kv: KeyValueClient,
+    rid: string,
+    type: BookingAuditEventType,
+    now: Date = new Date(),
+    detail?: string,
+): Promise<BookingAuditEvent[]> {
+    const key = bookingAuditKey(rid);
+    const events = parseAuditEvents(await kv.get(key));
+    events.push({ type, at: now.toISOString(), ...(detail !== undefined ? { detail } : {}) });
+    const capped =
+        events.length > MAX_AUDIT_EVENTS ? events.slice(events.length - MAX_AUDIT_EVENTS) : events;
+    await kv.put(key, JSON.stringify(capped), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
+    return capped;
+}
+
+/** Read one request's audit trail, oldest first; unknown rids read empty. */
+export async function listAuditEvents(
+    kv: KeyValueClient,
+    rid: string,
+): Promise<BookingAuditEvent[]> {
+    return parseAuditEvents(await kv.get(bookingAuditKey(rid)));
 }
 
 /**

@@ -2,7 +2,10 @@
  * Booking-link Worker BFF slices 1-3: mint + status + cancel + list
  * (dispatcher tracking) and public customer booking (slots + book via
  * capability token), plus the dispatcher session vault (sealed-KV token
- * store so the SPA persists only an opaque session id).
+ * store so the SPA persists only an opaque session id). Link lifecycle:
+ * dispatcher-authed extend (reseals the token with a fresh exp) plus a KV
+ * audit trail (view/book/cancel/extend) served per request for the
+ * tracking UI.
  *
  * The same Worker also serves the SPA as static assets (see
  * `cloudflare.config.ts`: `runWorkerFirst: ["/api/book/*"]`), so this router
@@ -17,10 +20,15 @@
 
 import { signBookingToken, verifyBookingToken } from "./token";
 import {
+    appendAuditEvent,
+    BOOKING_EXTEND_DEFAULT_DAYS,
+    BOOKING_EXTEND_MAX_DAYS,
     BOOKING_REQUEST_TTL_SECONDS,
     BookingStateError,
     createBookingRequest,
+    extendBookingExpiry,
     getBookingRequest,
+    listAuditEvents,
     listBookingRequests,
     markBookingBooked,
     markBookingClicked,
@@ -29,7 +37,12 @@ import {
     setBookingStatus,
     updateSealedTokens,
 } from "./kv";
-import type { BookingRequestRecord, HaloTokenPair, KeyValueClient } from "./kv";
+import type {
+    BookingAuditEvent,
+    BookingRequestRecord,
+    HaloTokenPair,
+    KeyValueClient,
+} from "./kv";
 import {
     createDispatcherSession,
     deleteDispatcherSession,
@@ -233,7 +246,10 @@ async function isDispatcherAuthorized(
     return !!session && timingSafeEqual(session.pair.access_token, pair.access_token);
 }
 
-function publicStatus(record: BookingRequestRecord): Record<string, unknown> {
+function publicStatus(
+    record: BookingRequestRecord,
+    viewCount: number = 0,
+): Record<string, unknown> {
     return {
         rid: record.rid,
         status: record.status,
@@ -246,7 +262,33 @@ function publicStatus(record: BookingRequestRecord): Record<string, unknown> {
         // Nulls (never undefined) so dispatcher clients can rely on the keys.
         clickedAt: record.clickedAt ?? null,
         bookedAppointmentId: record.bookedAppointmentId ?? null,
+        viewCount,
     };
+}
+
+/** Count validated customer views from the audit trail; never throws. */
+async function auditViewCount(kv: KeyValueClient, rid: string): Promise<number> {
+    let events: BookingAuditEvent[];
+    try {
+        events = await listAuditEvents(kv, rid);
+    } catch {
+        return 0;
+    }
+    return events.filter((event) => event.type === "view").length;
+}
+
+/** Best-effort audit write: lifecycle tracking must never break booking. */
+async function recordAuditEvent(
+    kv: KeyValueClient,
+    rid: string,
+    type: BookingAuditEvent["type"],
+    detail?: string,
+): Promise<void> {
+    try {
+        await appendAuditEvent(kv, rid, type, new Date(), detail);
+    } catch {
+        // Swallow: the booking transition already persisted.
+    }
 }
 
 /**
@@ -337,7 +379,8 @@ async function handleStatus(request: Request, env: BookingEnv, rid: string): Pro
     if (!(await isDispatcherAuthorized(request, record, env))) {
         return json(401, { error: "Unauthorized" });
     }
-    return json(200, publicStatus(await withReadTimeExpiry(env.BOOKING_REQUESTS, record)));
+    const current = await withReadTimeExpiry(env.BOOKING_REQUESTS, record);
+    return json(200, publicStatus(current, await auditViewCount(env.BOOKING_REQUESTS, rid)));
 }
 
 /**
@@ -359,8 +402,14 @@ async function handleList(request: Request, env: BookingEnv): Promise<Response> 
     const records = await listBookingRequests(env.BOOKING_REQUESTS);
     const mine: Record<string, unknown>[] = [];
     for (const record of records) {
+        const pushMine = async () => {
+            const current = await withReadTimeExpiry(env.BOOKING_REQUESTS, record);
+            mine.push(
+                publicStatus(current, await auditViewCount(env.BOOKING_REQUESTS, record.rid)),
+            );
+        };
         if (record.sessionId && timingSafeEqual(bearer, record.sessionId)) {
-            mine.push(publicStatus(await withReadTimeExpiry(env.BOOKING_REQUESTS, record)));
+            await pushMine();
             continue;
         }
         let pair: HaloTokenPair;
@@ -370,11 +419,11 @@ async function handleList(request: Request, env: BookingEnv): Promise<Response> 
             continue;
         }
         if (timingSafeEqual(bearer, pair.access_token)) {
-            mine.push(publicStatus(await withReadTimeExpiry(env.BOOKING_REQUESTS, record)));
+            await pushMine();
             continue;
         }
         if (session && timingSafeEqual(session.pair.access_token, pair.access_token)) {
-            mine.push(publicStatus(await withReadTimeExpiry(env.BOOKING_REQUESTS, record)));
+            await pushMine();
         }
     }
     return json(200, { requests: mine });
@@ -390,12 +439,13 @@ async function handleCancel(request: Request, env: BookingEnv, rid: string): Pro
     }
     try {
         const updated = await setBookingStatus(env.BOOKING_REQUESTS, rid, "cancelled");
-        return json(200, publicStatus(updated));
+        await recordAuditEvent(env.BOOKING_REQUESTS, rid, "cancel");
+        return json(200, publicStatus(updated, await auditViewCount(env.BOOKING_REQUESTS, rid)));
     } catch (error) {
         if (error instanceof BookingStateError && error.code === "illegal-transition") {
             return json(409, {
                 error: "Booking request is already final",
-                ...publicStatus(record),
+                ...publicStatus(record, await auditViewCount(env.BOOKING_REQUESTS, rid)),
             });
         }
         throw error;
@@ -502,6 +552,95 @@ async function handleSessionRefresh(request: Request, env: BookingEnv): Promise<
     }
 }
 
+export type ExtendValidation =
+    { ok: true; days: number } | { ok: false; error: string; details?: string[] };
+
+/** Pure validation for the extend body; the body itself is optional. */
+export function validateExtendRequest(body: unknown): ExtendValidation {
+    if (body === null || body === undefined || body === "") {
+        return { ok: true, days: BOOKING_EXTEND_DEFAULT_DAYS };
+    }
+    if (typeof body !== "object") {
+        return { ok: false, error: "Invalid extend request" };
+    }
+    const days = (body as Record<string, unknown>).days;
+    if (days === undefined) {
+        return { ok: true, days: BOOKING_EXTEND_DEFAULT_DAYS };
+    }
+    if (
+        typeof days !== "number" ||
+        !Number.isInteger(days) ||
+        days < 1 ||
+        days > BOOKING_EXTEND_MAX_DAYS
+    ) {
+        return {
+            ok: false,
+            error: "Invalid extend request",
+            details: [`days must be an integer between 1 and ${BOOKING_EXTEND_MAX_DAYS}`],
+        };
+    }
+    return { ok: true, days };
+}
+
+/**
+ * Dispatcher-authed expiry renewal: reseals (re-signs) the booking-link
+ * token with a fresh `exp` and renews the KV record to match. Pending
+ * records past `exp` flip to expired and answer 409 like cancel does.
+ */
+async function handleExtend(request: Request, env: BookingEnv, rid: string): Promise<Response> {
+    const record = await getBookingRequest(env.BOOKING_REQUESTS, rid);
+    if (!record) {
+        return json(404, { error: "Booking request not found" });
+    }
+    if (!(await isDispatcherAuthorized(request, record, env))) {
+        return json(401, { error: "Unauthorized" });
+    }
+    let body: unknown;
+    try {
+        const text = await request.text();
+        body = text ? (JSON.parse(text) as unknown) : undefined;
+    } catch {
+        return json(400, { error: "Request body must be valid JSON" });
+    }
+    const validation = validateExtendRequest(body);
+    if (!validation.ok) {
+        return json(400, { error: validation.error, details: validation.details });
+    }
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (record.status === "pending" && record.exp <= nowSec) {
+        const flipped = await withReadTimeExpiry(env.BOOKING_REQUESTS, record);
+        return json(409, {
+            error: "Booking request is already final",
+            ...publicStatus(flipped, await auditViewCount(env.BOOKING_REQUESTS, rid)),
+        });
+    }
+    const newExp = nowSec + validation.days * 24 * 60 * 60;
+    try {
+        const updated = await extendBookingExpiry(env.BOOKING_REQUESTS, rid, newExp);
+        const expiresAt = new Date(newExp * 1000).toISOString();
+        await recordAuditEvent(env.BOOKING_REQUESTS, rid, "extend", expiresAt);
+        const token = await signBookingToken(
+            {
+                rid,
+                ticketId: updated.ticketId,
+                agentIds: updated.agentIds,
+                appointmentTypeId: updated.appointmentTypeId,
+                exp: newExp,
+            },
+            env.SECRET,
+        );
+        return json(200, { rid, token, expiresAt });
+    } catch (error) {
+        if (error instanceof BookingStateError && error.code === "illegal-transition") {
+            return json(409, {
+                error: "Booking request is already final",
+                ...publicStatus(record, await auditViewCount(env.BOOKING_REQUESTS, rid)),
+            });
+        }
+        throw error;
+    }
+}
+
 /**
  * Expire: drop the session (logout). Idempotent — a Bearer [REDACTED] always
  * reports ok so logout never fails on an already-dead session.
@@ -515,7 +654,24 @@ async function handleSessionExpire(request: Request, env: BookingEnv): Promise<R
     return json(200, { ok: true });
 }
 
-const REQUEST_ROUTE = /^\/api\/book\/requests\/([^/]+)\/(status|cancel|slots|book)$/;
+/** Dispatcher-authed audit trail: view count plus the full event list. */
+async function handleAudit(request: Request, env: BookingEnv, rid: string): Promise<Response> {
+    const record = await getBookingRequest(env.BOOKING_REQUESTS, rid);
+    if (!record) {
+        return json(404, { error: "Booking request not found" });
+    }
+    if (!(await isDispatcherAuthorized(request, record, env))) {
+        return json(401, { error: "Unauthorized" });
+    }
+    const events = await listAuditEvents(env.BOOKING_REQUESTS, rid);
+    return json(200, {
+        rid,
+        viewCount: events.filter((event) => event.type === "view").length,
+        events,
+    });
+}
+
+const REQUEST_ROUTE = /^\/api\/book\/requests\/([^/]+)\/(status|cancel|extend|audit|slots|book)$/;
 
 /** Best-effort client IP for rate limiting (Cloudflare-aware). */
 function clientIp(request: Request): string {
@@ -704,7 +860,9 @@ async function handleSlots(
     }
 
     // Claim-on-load: the first validated view flips sent -> clicked.
+    // Every validated view also appends to the audit trail (view counts).
     const { firstView } = await markBookingClicked(env.BOOKING_REQUESTS, rid);
+    await recordAuditEvent(env.BOOKING_REQUESTS, rid, "view");
 
     const nowMs = Date.now();
     const window = bookingWindowIso(nowMs, utcOffsetMin, days);
@@ -942,6 +1100,7 @@ async function handleBook(
 
     try {
         await markBookingBooked(env.BOOKING_REQUESTS, rid, appointmentId);
+        await recordAuditEvent(env.BOOKING_REQUESTS, rid, "book", String(appointmentId));
     } catch (error) {
         // Lost a concurrent redeem race: the appointment exists, but the
         // record already flipped. Answer replay semantics, no duplicate.
@@ -1030,6 +1189,20 @@ export default {
                     return limited;
                 }
                 return handleCancel(request, env, rid);
+            }
+            if (request.method === "POST" && action === "extend") {
+                const limited = await publicRateLimit(request, env);
+                if (limited) {
+                    return limited;
+                }
+                return handleExtend(request, env, rid);
+            }
+            if (request.method === "GET" && action === "audit") {
+                const limited = await publicRateLimit(request, env);
+                if (limited) {
+                    return limited;
+                }
+                return handleAudit(request, env, rid);
             }
             if (request.method === "GET" && action === "slots") {
                 return handleSlots(request, env, url, rid);

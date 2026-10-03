@@ -6,6 +6,8 @@ import {
     cancelBookingRequest,
     confirmBooking,
     decodeBookingTokenRid,
+    extendBookingRequest,
+    fetchBookingAudit,
     fetchBookingRequests,
     fetchBookingStatus,
     fetchBookSlots,
@@ -214,6 +216,7 @@ describe("dispatcher tracking", () => {
             exp: 9_999_999_999,
             clickedAt: null,
             bookedAppointmentId: null,
+            viewCount: 0,
             ...overrides,
         };
     }
@@ -335,6 +338,172 @@ describe("dispatcher tracking", () => {
             expect(error).toBeInstanceOf(BookingTrackerError);
             expect((error as BookingTrackerError).code).toBe("conflict");
             expect((error as BookingTrackerError).current).toEqual(terminal);
+        });
+    });
+
+    describe("viewCount parsing", () => {
+        it("passes server view counts through", async () => {
+            mockFetchOnce(200, summary({ viewCount: 4 }));
+            await expect(fetchBookingStatus("rid-1", ACCESS)).resolves.toMatchObject({
+                viewCount: 4,
+            });
+        });
+
+        it("defaults a missing or invalid viewCount to 0", async () => {
+            const legacy = summary();
+            delete (legacy as Partial<BookingRequestSummary>).viewCount;
+            mockFetchOnce(200, legacy);
+            await expect(fetchBookingStatus("rid-1", ACCESS)).resolves.toMatchObject({
+                viewCount: 0,
+            });
+            mockFetchOnce(200, { ...summary(), viewCount: "many" });
+            await expect(fetchBookingStatus("rid-1", ACCESS)).resolves.toMatchObject({
+                viewCount: 0,
+            });
+        });
+    });
+
+    describe("extendBookingRequest", () => {
+        const renewed = {
+            rid: "rid-1",
+            token: "tok-renewed",
+            expiresAt: "2026-10-20T00:00:00.000Z",
+        };
+
+        it("POSTs the extend with days and returns the resealed link", async () => {
+            const impl = mockFetchOnce(200, renewed);
+            const result = await extendBookingRequest({
+                rid: "rid-1",
+                accessToken: ACCESS,
+                days: 14,
+            });
+            expect(result).toEqual(renewed);
+            const [url, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
+            expect(url).toBe("/api/book/requests/rid-1/extend");
+            expect(init.method).toBe("POST");
+            expect(JSON.parse(init.body as string)).toEqual({ days: 14 });
+            expect(authHeader(init)).toBe(`Bearer ${ACCESS}`);
+        });
+
+        it("sends an empty body when days is omitted", async () => {
+            const impl = mockFetchOnce(200, renewed);
+            await extendBookingRequest({ rid: "rid-1", accessToken: ACCESS });
+            const [, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
+            expect(JSON.parse(init.body as string)).toEqual({});
+        });
+
+        it("carries the current state on 409", async () => {
+            const terminal = summary({ status: "expired" });
+            mockFetchOnce(409, { error: "Booking request is already final", ...terminal });
+            const error = await extendBookingRequest({
+                rid: "rid-1",
+                accessToken: ACCESS,
+            }).catch((e: unknown) => e);
+            expect(error).toBeInstanceOf(BookingTrackerError);
+            expect((error as BookingTrackerError).code).toBe("conflict");
+            expect((error as BookingTrackerError).current).toEqual(terminal);
+        });
+
+        it("maps 401, 404, and 400", async () => {
+            mockFetchOnce(401, { error: "Unauthorized" });
+            await expect(
+                extendBookingRequest({ rid: "rid-1", accessToken: "stale" }),
+            ).rejects.toMatchObject({ code: "unauthorized" });
+            mockFetchOnce(404, { error: "Booking request not found" });
+            await expect(
+                extendBookingRequest({ rid: "rid-x", accessToken: ACCESS }),
+            ).rejects.toMatchObject({ code: "not-found" });
+            mockFetchOnce(400, { error: "Invalid extend request" });
+            const error = await extendBookingRequest({
+                rid: "rid-1",
+                accessToken: ACCESS,
+                days: 99,
+            }).catch((e: unknown) => e);
+            expect(error).toBeInstanceOf(BookingTrackerError);
+            expect((error as BookingTrackerError).code).toBe("invalid-request");
+        });
+
+        it("rejects malformed success bodies", async () => {
+            mockFetchOnce(200, { rid: "rid-1" });
+            await expect(
+                extendBookingRequest({ rid: "rid-1", accessToken: ACCESS }),
+            ).rejects.toMatchObject({ code: "network-error" });
+        });
+    });
+
+    describe("fetchBookingAudit", () => {
+        const trail = {
+            rid: "rid-1",
+            viewCount: 2,
+            events: [
+                { type: "view", at: "2026-10-03T10:00:00.000Z" },
+                { type: "view", at: "2026-10-03T11:00:00.000Z" },
+                {
+                    type: "extend",
+                    at: "2026-10-03T12:00:00.000Z",
+                    detail: "2026-10-20T00:00:00.000Z",
+                },
+            ],
+        };
+
+        it("GETs one request's audit trail", async () => {
+            const impl = mockFetchOnce(200, trail);
+            const result = await fetchBookingAudit("rid-1", ACCESS);
+            expect(result).toEqual({
+                rid: "rid-1",
+                viewCount: 2,
+                events: [
+                    { type: "view", at: "2026-10-03T10:00:00.000Z", detail: null },
+                    { type: "view", at: "2026-10-03T11:00:00.000Z", detail: null },
+                    {
+                        type: "extend",
+                        at: "2026-10-03T12:00:00.000Z",
+                        detail: "2026-10-20T00:00:00.000Z",
+                    },
+                ],
+            });
+            const [url] = impl.mock.calls[0] as unknown as [string];
+            expect(url).toBe("/api/book/requests/rid-1/audit");
+        });
+
+        it("drops malformed events instead of failing", async () => {
+            mockFetchOnce(200, {
+                rid: "rid-1",
+                viewCount: 1,
+                events: [{ type: "view", at: "2026-10-03T10:00:00.000Z" }, null, { nope: true }],
+            });
+            const result = await fetchBookingAudit("rid-1", ACCESS);
+            expect(result.events).toEqual([
+                { type: "view", at: "2026-10-03T10:00:00.000Z", detail: null },
+            ]);
+        });
+
+        it("counts views when the server omits the count", async () => {
+            mockFetchOnce(200, {
+                rid: "rid-1",
+                events: [
+                    { type: "view", at: "2026-10-03T10:00:00.000Z" },
+                    { type: "cancel", at: "2026-10-03T11:00:00.000Z" },
+                ],
+            });
+            await expect(fetchBookingAudit("rid-1", ACCESS)).resolves.toMatchObject({
+                viewCount: 1,
+            });
+        });
+
+        it("rejects a non-trail envelope and maps 401/404", async () => {
+            mockFetchOnce(200, { events: "nope" });
+            await expect(fetchBookingAudit("rid-1", ACCESS)).rejects.toMatchObject({
+                code: "network-error",
+            });
+            mockFetchOnce(401, { error: "Unauthorized" });
+            await expect(fetchBookingAudit("rid-1", ACCESS)).rejects.toMatchObject({
+                code: "unauthorized",
+            });
+            mockFetchOnce(404, { error: "Booking request not found" });
+            await expect(fetchBookingAudit("rid-x", ACCESS)).rejects.toMatchObject({
+                code: "not-found",
+            });
         });
     });
 

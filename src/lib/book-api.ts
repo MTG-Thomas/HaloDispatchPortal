@@ -272,6 +272,8 @@ export interface BookingRequestSummary {
     /** First validated customer view; null until the link is opened. */
     clickedAt: string | null;
     bookedAppointmentId: number | null;
+    /** Validated customer views, counted from the KV audit trail. */
+    viewCount: number;
 }
 
 /**
@@ -364,6 +366,8 @@ function parseBookingSummary(body: unknown): BookingRequestSummary | null {
     ) {
         return null;
     }
+    // Lenient viewCount: older Workers omit it; non-numeric reads as 0.
+    const viewCount = body.viewCount;
     return {
         rid: body.rid,
         status: body.status as BookingRequestStatus,
@@ -375,6 +379,10 @@ function parseBookingSummary(body: unknown): BookingRequestSummary | null {
         exp: body.exp,
         clickedAt,
         bookedAppointmentId,
+        viewCount:
+            typeof viewCount === "number" && Number.isFinite(viewCount)
+                ? Math.max(0, Math.floor(viewCount))
+                : 0,
     };
 }
 
@@ -488,6 +496,129 @@ export async function fetchBookingStatus(
         );
     }
     return summary;
+}
+
+/** Link-lifecycle audit event, oldest first in the trail. */
+export type BookingAuditEventType = "view" | "book" | "cancel" | "extend";
+
+export interface BookingAuditEvent {
+    type: BookingAuditEventType;
+    /** ISO timestamp of the event. */
+    at: string;
+    /** Appointment id (`book`) or new ISO expiry (`extend`); else null. */
+    detail: string | null;
+}
+
+export interface BookingAuditTrail {
+    rid: string;
+    viewCount: number;
+    events: BookingAuditEvent[];
+}
+
+const AUDIT_EVENT_TYPES: ReadonlySet<string> = new Set(["view", "book", "cancel", "extend"]);
+
+function parseAuditEvent(body: unknown): BookingAuditEvent | null {
+    if (!isRecord(body)) {
+        return null;
+    }
+    if (
+        typeof body.type !== "string" ||
+        !AUDIT_EVENT_TYPES.has(body.type) ||
+        typeof body.at !== "string" ||
+        !body.at
+    ) {
+        return null;
+    }
+    const detail = body.detail ?? null;
+    if (detail !== null && typeof detail !== "string") {
+        return null;
+    }
+    return { type: body.type as BookingAuditEventType, at: body.at, detail };
+}
+
+function parseAuditTrail(rid: string, body: unknown): BookingAuditTrail | null {
+    if (!isRecord(body) || !Array.isArray(body.events)) {
+        return null;
+    }
+    const events = body.events
+        .map(parseAuditEvent)
+        .filter((event): event is BookingAuditEvent => event !== null);
+    const viewCount = body.viewCount;
+    return {
+        rid,
+        viewCount:
+            typeof viewCount === "number" && Number.isFinite(viewCount)
+                ? Math.max(0, Math.floor(viewCount))
+                : events.filter((event) => event.type === "view").length,
+        events,
+    };
+}
+
+/** Read one request's audit trail (view count plus the event list). */
+export async function fetchBookingAudit(
+    rid: string,
+    accessToken: string,
+    options: TrackerFetchOptions = {},
+): Promise<BookingAuditTrail> {
+    const response = await dispatcherFetch(
+        `${BOOK_API_BASE}/requests/${encodeURIComponent(rid)}/audit`,
+        accessToken,
+        { signal: options.signal },
+    );
+    const trail = parseAuditTrail(rid, (await response.json()) as unknown);
+    if (!trail) {
+        throw new BookingTrackerError(
+            "network-error",
+            "The booking service returned an invalid response.",
+        );
+    }
+    return trail;
+}
+
+export interface ExtendBookingArgs {
+    rid: string;
+    accessToken: string;
+    /** Fresh TTL in days (1-30); the Worker defaults an omitted value to 7. */
+    days?: number;
+    signal?: AbortSignal;
+}
+
+export interface ExtendBookingResult {
+    rid: string;
+    /** Resealed booking-link token carrying the fresh exp. */
+    token: string;
+    expiresAt: string;
+}
+
+/**
+ * Extend an open request's expiry and reseal its booking-link token. The
+ * caller must distribute the returned token: the previous link keeps its
+ * old (shorter) expiry. 409s carry the now-current terminal state.
+ */
+export async function extendBookingRequest(args: ExtendBookingArgs): Promise<ExtendBookingResult> {
+    const response = await dispatcherFetch(
+        `${BOOK_API_BASE}/requests/${encodeURIComponent(args.rid)}/extend`,
+        args.accessToken,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(args.days === undefined ? {} : { days: args.days }),
+            signal: args.signal,
+        },
+    );
+    const body = (await response.json()) as unknown;
+    if (
+        !isRecord(body) ||
+        typeof body.rid !== "string" ||
+        typeof body.token !== "string" ||
+        typeof body.expiresAt !== "string"
+    ) {
+        throw new BookingTrackerError(
+            "network-error",
+            "The booking service returned an invalid response.",
+        );
+    }
+    return { rid: body.rid, token: body.token, expiresAt: body.expiresAt };
 }
 
 /** Cancel an open request; 409s carry the now-current terminal state. */
