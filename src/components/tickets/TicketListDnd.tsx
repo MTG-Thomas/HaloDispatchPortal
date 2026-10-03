@@ -53,6 +53,8 @@ import {
     type BookingRequestSummary,
 } from "@/lib/book-api";
 import { useBookingRequests } from "@/hooks/useBookingRequests";
+import { useBookingNotify } from "@/hooks/useBookingNotify";
+import { Switch } from "@/components/ui/switch";
 import { BookingStatusChip } from "@/components/booking/BookingStatusChip";
 import { OutstandingRequests } from "@/components/booking/OutstandingRequests";
 import type { EnrichedTicket } from "@/types/halo";
@@ -565,6 +567,7 @@ export function TicketList() {
     const { config } = useConfigStore();
     const { ticketListColumns, setTicketListColumns, setColumnWidth, resetColumns } =
         usePreferencesStore();
+    const { bookingNotifyEnabled, setBookingNotifyEnabled } = usePreferencesStore();
     const [searchTerm, setSearchTerm] = useState("");
     const [sort, setSort] = useState<SortState | null>(null);
     const [queueOpen, setQueueOpen] = useState(false);
@@ -588,6 +591,30 @@ export function TicketList() {
         () => booking.requests.filter((row) => isBookingOpen(row)).length,
         [booking.requests],
     );
+    // Unread badge: polls the tracker list on a visibility-aware interval and
+    // diffs snapshots for customer views/bookings. Browser Notifications are
+    // opt-in via the persisted preference, toggled in the queue dialog.
+    const bookingNotify = useBookingNotify({
+        requests: booking.requests,
+        refresh: booking.refresh,
+        notifyEnabled: bookingNotifyEnabled,
+    });
+
+    const notifyHint =
+        bookingNotify.notifyPermission === "unsupported"
+            ? "Browser notifications are not supported here."
+            : bookingNotify.notifyPermission === "denied"
+              ? "Blocked — allow notifications in browser settings to use this."
+              : bookingNotify.notifyPermission === "granted"
+                ? "You'll be notified when a link is viewed or booked."
+                : "Your browser will ask for permission.";
+
+    const handleNotifyToggle = (enabled: boolean) => {
+        setBookingNotifyEnabled(enabled);
+        if (enabled && bookingNotify.notifyPermission === "default") {
+            void bookingNotify.requestNotifyPermission();
+        }
+    };
 
     const handleBookingResend = async (summary: BookingRequestSummary) => {
         try {
@@ -926,6 +953,16 @@ export function TicketList() {
                                         {openBookingCount}
                                     </Badge>
                                 )}
+                                {bookingNotify.unreadCount > 0 && (
+                                    <Badge
+                                        variant="default"
+                                        className="ml-1 tabular-nums"
+                                        title="Links viewed or booked since you last opened the queue"
+                                        aria-label={`${bookingNotify.unreadCount} unread booking updates`}
+                                    >
+                                        {bookingNotify.unreadCount} new
+                                    </Badge>
+                                )}
                             </Button>
                             <div className="ml-auto flex items-center gap-2">
                                 {ticketsRefreshing && (
@@ -1073,7 +1110,15 @@ export function TicketList() {
                 </div>
             )}
 
-            <Dialog open={queueOpen} onOpenChange={setQueueOpen}>
+            <Dialog
+                open={queueOpen}
+                onOpenChange={(open) => {
+                    setQueueOpen(open);
+                    if (open) {
+                        bookingNotify.markAllSeen();
+                    }
+                }}
+            >
                 <DialogContent className="sm:max-w-[720px]">
                     <DialogHeader>
                         <DialogTitle>Booking requests</DialogTitle>
@@ -1082,6 +1127,19 @@ export function TicketList() {
                             the old one.
                         </DialogDescription>
                     </DialogHeader>
+                    <div className="flex items-center gap-2 rounded-md border px-3 py-2">
+                        <Switch
+                            id="booking-notify-toggle"
+                            checked={bookingNotifyEnabled}
+                            onCheckedChange={handleNotifyToggle}
+                            disabled={bookingNotify.notifyPermission === "unsupported"}
+                            aria-label="Browser notifications for booking activity"
+                        />
+                        <label htmlFor="booking-notify-toggle" className="text-sm font-medium">
+                            Browser notifications
+                        </label>
+                        <span className="ml-auto text-xs text-muted-foreground">{notifyHint}</span>
+                    </div>
                     <OutstandingRequests tracker={booking} />
                 </DialogContent>
             </Dialog>
