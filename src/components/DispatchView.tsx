@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { startOfDay, endOfDay } from "date-fns";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { CalendarHeader } from "./calendar/CalendarHeader";
@@ -6,6 +6,8 @@ import { CalendarGrid } from "./calendar/CalendarGrid";
 import { TicketList } from "./tickets/TicketListDnd";
 import { LoadingScreen } from "./LoadingScreen";
 import { useDispatchStore } from "@/stores/useDispatchStore";
+import { useWebMcpTools } from "@/hooks/useWebMcpTools";
+import { dispatcherTools } from "@/lib/webmcp";
 
 export function DispatchView() {
     const {
@@ -33,6 +35,11 @@ export function DispatchView() {
         appointments,
         completeInitialLoad,
     } = useDispatchStore();
+
+    // WebMCP: expose dispatcher tools to on-device agents. No-op where
+    // WebMCP is unsupported; registration dies with this route.
+    const webmcpTools = useMemo(() => dispatcherTools(), []);
+    useWebMcpTools(webmcpTools);
 
     // Load client cache on mount if not already loaded
     useEffect(() => {

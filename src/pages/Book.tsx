@@ -11,6 +11,8 @@ import {
     type BookConfirmResponse,
 } from "@/lib/book-api";
 import { Calendar, CheckCircle2, Clock, Loader2, User } from "lucide-react";
+import { useWebMcpTools } from "@/hooks/useWebMcpTools";
+import { publicBookingTools } from "@/lib/webmcp";
 
 type Phase = "loading" | "ready" | "done" | "error";
 
@@ -59,6 +61,11 @@ const Book: React.FC = () => {
     const [confirming, setConfirming] = useState(false);
     const [slotError, setSlotError] = useState<string | null>(null);
     const [confirmation, setConfirmation] = useState<BookConfirmResponse | null>(null);
+
+    // WebMCP: expose this link's booking tools to on-device agents. No-op
+    // where WebMCP is unsupported; registration dies with this route.
+    const webmcpTools = useMemo(() => publicBookingTools(token), [token]);
+    useWebMcpTools(webmcpTools);
 
     const load = useCallback(async () => {
         setPhase("loading");
