@@ -6,7 +6,7 @@ import {
     resendBookingRequest,
     type BookingRequestSummary,
 } from "@/lib/book-api";
-import { loadTokens } from "@/services/auth/authService";
+import { loadDispatcherSession } from "@/services/auth/authService";
 
 export interface BookingResendResult {
     summary: BookingRequestSummary;
@@ -56,14 +56,14 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
     }, []);
 
     const refresh = useCallback(async () => {
-        const tokens = loadTokens();
-        if (!tokens?.access_token) {
+        const session = loadDispatcherSession();
+        if (!session) {
             return;
         }
         setLoading(true);
         setError(null);
         try {
-            const rows = await fetchBookingRequests(tokens.access_token);
+            const rows = await fetchBookingRequests(session.sessionId);
             if (mountedRef.current) {
                 setRequests(rows);
             }
@@ -89,13 +89,13 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
     }, [enabled, refresh]);
 
     const cancel = useCallback(async (rid: string): Promise<BookingRequestSummary> => {
-        const tokens = loadTokens();
-        if (!tokens?.access_token) {
+        const session = loadDispatcherSession();
+        if (!session) {
             throw new BookingTrackerError("unauthorized", "Sign in to Halo first.");
         }
         setBusyRid(rid);
         try {
-            const updated = await cancelBookingRequest(rid, tokens.access_token).catch(
+            const updated = await cancelBookingRequest(rid, session.sessionId).catch(
                 (err: unknown) => {
                     // Raced to terminal elsewhere: adopt the current state.
                     if (
@@ -121,8 +121,8 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
 
     const resend = useCallback(
         async (previous: BookingRequestSummary): Promise<BookingResendResult> => {
-            const tokens = loadTokens();
-            if (!tokens?.access_token || !tokens?.refresh_token) {
+            const session = loadDispatcherSession();
+            if (!session) {
                 throw new BookingTrackerError(
                     "unauthorized",
                     "Sign in to Halo before resending a booking link.",
@@ -132,8 +132,7 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
             try {
                 const fresh = await resendBookingRequest({
                     previous,
-                    haloTokenPair: tokens,
-                    accessToken: tokens.access_token,
+                    sessionId: session.sessionId,
                 });
                 const now = new Date().toISOString();
                 const summary: BookingRequestSummary = {

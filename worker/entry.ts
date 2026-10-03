@@ -1,7 +1,8 @@
 /**
  * Booking-link Worker BFF slices 1-3: mint + status + cancel + list
  * (dispatcher tracking) and public customer booking (slots + book via
- * capability token).
+ * capability token), plus the dispatcher session vault (sealed-KV token
+ * store so the SPA persists only an opaque session id).
  *
  * The same Worker also serves the SPA as static assets (see
  * `cloudflare.config.ts`: `runWorkerFirst: ["/api/book/*"]`), so this router
@@ -10,6 +11,8 @@
  * Public endpoints take the booking-link token as `Authorization: Bearer`,
  * `?token=`, or (book only) a `token` JSON body field. The token is verified
  * by signature on every request; its `rid` must match the URL rid.
+ * Dispatcher tracking endpoints take the vault session id as
+ * `Authorization: Bearer` (legacy Halo access tokens still work per record).
  */
 
 import { signBookingToken, verifyBookingToken } from "./token";
@@ -27,6 +30,13 @@ import {
     updateSealedTokens,
 } from "./kv";
 import type { BookingRequestRecord, HaloTokenPair, KeyValueClient } from "./kv";
+import {
+    createDispatcherSession,
+    deleteDispatcherSession,
+    openDispatcherSession,
+    refreshDispatcherSession,
+    SessionError,
+} from "./session";
 import { createHaloClient, HaloApiError } from "./halo";
 import type { HaloClient, WorkerAppointment } from "./halo";
 import {
@@ -60,7 +70,13 @@ export interface MintRequest {
     ticketId: number;
     agentIds: number[];
     appointmentTypeId: number;
-    haloTokenPair: HaloTokenPair;
+    /**
+     * Exactly one credential: the vault session id (the SPA path — the
+     * Worker seals the vaulted pair into the record) or a raw Halo pair
+     * (legacy pre-vault clients).
+     */
+    sessionId?: string;
+    haloTokenPair?: HaloTokenPair;
     /** Dispatcher-local minutes east of UTC (optional; stored for hours checks). */
     dispatcherUtcOffset?: number;
     /** Buffer minutes around busy blocks (optional; 0 keeps back-to-back). */
@@ -108,7 +124,17 @@ export function validateMintRequest(body: unknown): MintValidation {
     if (!isPositiveInt(candidate.appointmentTypeId)) {
         details.push("appointmentTypeId must be a positive integer");
     }
-    if (!isTokenPair(candidate.haloTokenPair)) {
+    const hasSessionId = candidate.sessionId !== undefined;
+    const hasTokenPair = candidate.haloTokenPair !== undefined;
+    if (hasSessionId && hasTokenPair) {
+        details.push("sessionId and haloTokenPair are mutually exclusive");
+    } else if (!hasSessionId && !hasTokenPair) {
+        details.push(
+            "sessionId or haloTokenPair with non-empty access_token and refresh_token is required",
+        );
+    } else if (hasSessionId && (typeof candidate.sessionId !== "string" || !candidate.sessionId)) {
+        details.push("sessionId must be a non-empty string");
+    } else if (hasTokenPair && !isTokenPair(candidate.haloTokenPair)) {
         details.push("haloTokenPair must include non-empty access_token and refresh_token");
     }
     const dispatcherUtcOffset = candidate.dispatcherUtcOffset;
@@ -140,7 +166,8 @@ export function validateMintRequest(body: unknown): MintValidation {
             ticketId: candidate.ticketId as number,
             agentIds: candidate.agentIds as number[],
             appointmentTypeId: candidate.appointmentTypeId as number,
-            haloTokenPair: candidate.haloTokenPair as HaloTokenPair,
+            ...(hasSessionId ? { sessionId: candidate.sessionId as string } : {}),
+            ...(hasTokenPair ? { haloTokenPair: candidate.haloTokenPair as HaloTokenPair } : {}),
             ...(typeof dispatcherUtcOffset === "number" ? { dispatcherUtcOffset } : {}),
             ...(typeof bufferMin === "number" ? { bufferMin } : {}),
         },
@@ -173,25 +200,37 @@ function timingSafeEqual(a: string, b: string): boolean {
 }
 
 /**
- * Dispatcher auth for status/cancel: the caller proves dispatchership by
- * presenting the same Halo access token that was sealed at mint time.
+ * Dispatcher auth for status/cancel. The vault path compares the Bearer
+ * session id against the record's minting session (no crypto needed); the
+ * legacy path compares the Bearer Halo access token — presented directly
+ * (pre-vault clients) or held by a live vault session (pre-vault records
+ * still tracked after the upgrade) — against the sealed pair.
  */
 async function isDispatcherAuthorized(
     request: Request,
     record: BookingRequestRecord,
-    secret: string,
+    env: BookingEnv,
 ): Promise<boolean> {
     const bearer = bearerToken(request);
     if (!bearer) {
         return false;
     }
+    if (record.sessionId && timingSafeEqual(bearer, record.sessionId)) {
+        return true;
+    }
     let pair: HaloTokenPair;
     try {
-        pair = await openTokenPair(record.sealedTokens, secret);
+        pair = await openTokenPair(record.sealedTokens, env.SECRET);
     } catch {
         return false;
     }
-    return timingSafeEqual(bearer, pair.access_token);
+    if (timingSafeEqual(bearer, pair.access_token)) {
+        return true;
+    }
+    const session = await openDispatcherSession(env.BOOKING_REQUESTS, bearer, env.SECRET).catch(
+        () => null,
+    );
+    return !!session && timingSafeEqual(session.pair.access_token, pair.access_token);
 }
 
 function publicStatus(record: BookingRequestRecord): Record<string, unknown> {
@@ -240,10 +279,28 @@ async function handleMint(request: Request, env: BookingEnv): Promise<Response> 
     if (!validation.ok) {
         return json(400, { error: validation.error, details: validation.details });
     }
+    // Session path: seal the vaulted pair and bind the record to the
+    // session for tracking; legacy path: seal the presented pair as before.
+    let pair: HaloTokenPair;
+    let sessionId: string | undefined;
+    if (validation.value.sessionId !== undefined) {
+        const opened = await openDispatcherSession(
+            env.BOOKING_REQUESTS,
+            validation.value.sessionId,
+            env.SECRET,
+        );
+        if (!opened) {
+            return json(401, { error: "Unauthorized" });
+        }
+        pair = opened.pair;
+        sessionId = validation.value.sessionId;
+    } else {
+        pair = validation.value.haloTokenPair as HaloTokenPair;
+    }
     const nowSec = Math.floor(Date.now() / 1000);
     const exp = nowSec + BOOKING_REQUEST_TTL_SECONDS;
     const rid = globalThis.crypto.randomUUID();
-    const sealedTokens = await sealTokenPair(validation.value.haloTokenPair, env.SECRET);
+    const sealedTokens = await sealTokenPair(pair, env.SECRET);
     const record = await createBookingRequest(env.BOOKING_REQUESTS, {
         rid,
         ticketId: validation.value.ticketId,
@@ -257,6 +314,7 @@ async function handleMint(request: Request, env: BookingEnv): Promise<Response> 
         ...(validation.value.bufferMin !== undefined
             ? { bufferMin: validation.value.bufferMin }
             : {}),
+        ...(sessionId !== undefined ? { sessionId } : {}),
     });
     const token = await signBookingToken(
         {
@@ -276,35 +334,48 @@ async function handleStatus(request: Request, env: BookingEnv, rid: string): Pro
     if (!record) {
         return json(404, { error: "Booking request not found" });
     }
-    if (!(await isDispatcherAuthorized(request, record, env.SECRET))) {
+    if (!(await isDispatcherAuthorized(request, record, env))) {
         return json(401, { error: "Unauthorized" });
     }
     return json(200, publicStatus(await withReadTimeExpiry(env.BOOKING_REQUESTS, record)));
 }
 
 /**
- * Dispatcher tracking list: every request the caller minted (proved per
- * record by the sealed Halo access token, same as status/cancel), newest
- * first. Unopenable rows (sealed under a rotated secret) are skipped.
+ * Dispatcher tracking list: every request the caller minted, newest first.
+ * Session-bound records match by session id without opening; the legacy
+ * access-token fallback opens each row as before. Unopenable rows (sealed
+ * under a rotated secret) are skipped. Strangers get 200 with zero rows.
  */
 async function handleList(request: Request, env: BookingEnv): Promise<Response> {
     const bearer = bearerToken(request);
     if (!bearer) {
         return json(401, { error: "Unauthorized" });
     }
+    // Resolve the Bearer [REDACTED] once: a live session also adopts pre-vault
+    // rows sealed with the same Halo access token (see isDispatcherAuthorized).
+    const session = await openDispatcherSession(env.BOOKING_REQUESTS, bearer, env.SECRET).catch(
+        () => null,
+    );
     const records = await listBookingRequests(env.BOOKING_REQUESTS);
     const mine: Record<string, unknown>[] = [];
     for (const record of records) {
+        if (record.sessionId && timingSafeEqual(bearer, record.sessionId)) {
+            mine.push(publicStatus(await withReadTimeExpiry(env.BOOKING_REQUESTS, record)));
+            continue;
+        }
         let pair: HaloTokenPair;
         try {
             pair = await openTokenPair(record.sealedTokens, env.SECRET);
         } catch {
             continue;
         }
-        if (!timingSafeEqual(bearer, pair.access_token)) {
+        if (timingSafeEqual(bearer, pair.access_token)) {
+            mine.push(publicStatus(await withReadTimeExpiry(env.BOOKING_REQUESTS, record)));
             continue;
         }
-        mine.push(publicStatus(await withReadTimeExpiry(env.BOOKING_REQUESTS, record)));
+        if (session && timingSafeEqual(session.pair.access_token, pair.access_token)) {
+            mine.push(publicStatus(await withReadTimeExpiry(env.BOOKING_REQUESTS, record)));
+        }
     }
     return json(200, { requests: mine });
 }
@@ -314,7 +385,7 @@ async function handleCancel(request: Request, env: BookingEnv, rid: string): Pro
     if (!record) {
         return json(404, { error: "Booking request not found" });
     }
-    if (!(await isDispatcherAuthorized(request, record, env.SECRET))) {
+    if (!(await isDispatcherAuthorized(request, record, env))) {
         return json(401, { error: "Unauthorized" });
     }
     try {
@@ -329,6 +400,119 @@ async function handleCancel(request: Request, env: BookingEnv, rid: string): Pro
         }
         throw error;
     }
+}
+
+/* --------------------------------------------------------------------- */
+/* Dispatcher session vault (see ./session.ts). The SPA persists only the  */
+/* opaque session id; these endpoints create, use, refresh, and expire the  */
+/* sealed Halo pair behind it. Create/use/refresh are rate-limited like the */
+/* other dispatcher routes.                                                */
+/* --------------------------------------------------------------------- */
+
+async function handleSessionCreate(request: Request, env: BookingEnv): Promise<Response> {
+    let body: unknown;
+    try {
+        body = await request.json();
+    } catch {
+        return json(400, { error: "Request body must be valid JSON" });
+    }
+    const pair = (body as { haloTokenPair?: unknown } | null)?.haloTokenPair;
+    if (!isTokenPair(pair)) {
+        return json(400, {
+            error: "Invalid session request",
+            details: ["haloTokenPair must include non-empty access_token and refresh_token"],
+        });
+    }
+    const record = await createDispatcherSession(env.BOOKING_REQUESTS, pair, env.SECRET);
+    return json(201, {
+        sessionId: record.sessionId,
+        expiresAt: new Date(record.exp * 1000).toISOString(),
+    });
+}
+
+/**
+ * Use: validate the Bearer [REDACTED] and hand the sealed pair back so the SPA
+ * can repopulate its (memory-only) tokens after a reload. Read-only: TTL is
+ * extended by refresh, never by reads.
+ */
+async function handleSessionUse(request: Request, env: BookingEnv): Promise<Response> {
+    const bearer = bearerToken(request);
+    if (!bearer) {
+        return json(401, { error: "Unauthorized" });
+    }
+    const opened = await openDispatcherSession(env.BOOKING_REQUESTS, bearer, env.SECRET);
+    if (!opened) {
+        return json(401, { error: "Unauthorized" });
+    }
+    return json(200, {
+        sessionId: opened.record.sessionId,
+        expiresAt: new Date(opened.record.exp * 1000).toISOString(),
+        haloTokenPair: opened.pair,
+    });
+}
+
+/**
+ * Refresh: extend a live session by a full TTL, resealing the replacement
+ * pair when the body carries one (post-rotation). The body itself is
+ * optional — a bare POST only extends.
+ */
+async function handleSessionRefresh(request: Request, env: BookingEnv): Promise<Response> {
+    const bearer = bearerToken(request);
+    if (!bearer) {
+        return json(401, { error: "Unauthorized" });
+    }
+    let nextPair: HaloTokenPair | undefined;
+    const text = await request.text();
+    if (text.trim()) {
+        let body: unknown;
+        try {
+            body = JSON.parse(text);
+        } catch {
+            return json(400, { error: "Request body must be valid JSON" });
+        }
+        const candidate = (body as { haloTokenPair?: unknown } | null)?.haloTokenPair;
+        if (candidate !== undefined) {
+            if (!isTokenPair(candidate)) {
+                return json(400, {
+                    error: "Invalid session request",
+                    details: [
+                        "haloTokenPair must include non-empty access_token and refresh_token",
+                    ],
+                });
+            }
+            nextPair = candidate;
+        }
+    }
+    try {
+        const updated = await refreshDispatcherSession(
+            env.BOOKING_REQUESTS,
+            bearer,
+            env.SECRET,
+            nextPair,
+        );
+        return json(200, {
+            sessionId: updated.sessionId,
+            expiresAt: new Date(updated.exp * 1000).toISOString(),
+        });
+    } catch (error) {
+        if (error instanceof SessionError && error.code === "not-found") {
+            return json(401, { error: "Unauthorized" });
+        }
+        throw error;
+    }
+}
+
+/**
+ * Expire: drop the session (logout). Idempotent — a Bearer [REDACTED] always
+ * reports ok so logout never fails on an already-dead session.
+ */
+async function handleSessionExpire(request: Request, env: BookingEnv): Promise<Response> {
+    const bearer = bearerToken(request);
+    if (!bearer) {
+        return json(401, { error: "Unauthorized" });
+    }
+    await deleteDispatcherSession(env.BOOKING_REQUESTS, bearer);
+    return json(200, { ok: true });
 }
 
 const REQUEST_ROUTE = /^\/api\/book\/requests\/([^/]+)\/(status|cancel|slots|book)$/;
@@ -801,6 +985,34 @@ export default {
                 return limited;
             }
             return handleList(request, env);
+        }
+        if (request.method === "POST" && url.pathname === "/api/book/sessions") {
+            const limited = await publicRateLimit(request, env);
+            if (limited) {
+                return limited;
+            }
+            return handleSessionCreate(request, env);
+        }
+        if (request.method === "GET" && url.pathname === "/api/book/sessions/current") {
+            const limited = await publicRateLimit(request, env);
+            if (limited) {
+                return limited;
+            }
+            return handleSessionUse(request, env);
+        }
+        if (request.method === "POST" && url.pathname === "/api/book/sessions/refresh") {
+            const limited = await publicRateLimit(request, env);
+            if (limited) {
+                return limited;
+            }
+            return handleSessionRefresh(request, env);
+        }
+        if (request.method === "DELETE" && url.pathname === "/api/book/sessions/current") {
+            const limited = await publicRateLimit(request, env);
+            if (limited) {
+                return limited;
+            }
+            return handleSessionExpire(request, env);
         }
         const match = REQUEST_ROUTE.exec(url.pathname);
         if (match) {

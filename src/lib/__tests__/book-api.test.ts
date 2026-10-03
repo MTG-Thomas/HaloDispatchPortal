@@ -200,7 +200,7 @@ describe("confirmBooking", () => {
 });
 
 describe("dispatcher tracking", () => {
-    const ACCESS = "test-access-token";
+    const SESSION = "test-session-id";
 
     function summary(overrides: Partial<BookingRequestSummary> = {}): BookingRequestSummary {
         return {
@@ -260,29 +260,29 @@ describe("dispatcher tracking", () => {
         it("GETs the list with the dispatcher header", async () => {
             const rows = [summary(), summary({ rid: "rid-2", ticketId: 43 })];
             const impl = mockFetchOnce(200, { requests: rows });
-            const result = await fetchBookingRequests(ACCESS);
+            const result = await fetchBookingRequests(SESSION);
             expect(result).toEqual(rows);
             const [url, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
             expect(url).toBe("/api/book/requests");
-            expect(authHeader(init)).toBe(`Bearer ${ACCESS}`);
+            expect(authHeader(init)).toBe(`Bearer ${SESSION}`);
         });
 
         it("skips malformed rows instead of failing", async () => {
             mockFetchOnce(200, { requests: [summary(), { nope: true }, null] });
-            const result = await fetchBookingRequests(ACCESS);
+            const result = await fetchBookingRequests(SESSION);
             expect(result).toEqual([summary()]);
         });
 
         it("rejects a non-list envelope", async () => {
             mockFetchOnce(200, { requests: "nope" });
-            await expect(fetchBookingRequests(ACCESS)).rejects.toMatchObject({
+            await expect(fetchBookingRequests(SESSION)).rejects.toMatchObject({
                 code: "network-error",
             });
         });
 
         it("maps 401 to unauthorized", async () => {
             mockFetchOnce(401, { error: "Unauthorized" });
-            await expect(fetchBookingRequests(ACCESS)).rejects.toMatchObject({
+            await expect(fetchBookingRequests(SESSION)).rejects.toMatchObject({
                 code: "unauthorized",
             });
         });
@@ -294,7 +294,7 @@ describe("dispatcher tracking", () => {
                     throw new TypeError("fetch failed");
                 }),
             );
-            await expect(fetchBookingRequests(ACCESS)).rejects.toMatchObject({
+            await expect(fetchBookingRequests(SESSION)).rejects.toMatchObject({
                 code: "network-error",
             });
         });
@@ -303,7 +303,7 @@ describe("dispatcher tracking", () => {
     describe("fetchBookingStatus", () => {
         it("GETs one request's status", async () => {
             const impl = mockFetchOnce(200, summary());
-            const result = await fetchBookingStatus("rid-1", ACCESS);
+            const result = await fetchBookingStatus("rid-1", SESSION);
             expect(result).toEqual(summary());
             const [url] = impl.mock.calls[0] as unknown as [string];
             expect(url).toBe("/api/book/requests/rid-1/status");
@@ -311,7 +311,7 @@ describe("dispatcher tracking", () => {
 
         it("maps 404 to not-found", async () => {
             mockFetchOnce(404, { error: "Booking request not found" });
-            await expect(fetchBookingStatus("rid-x", ACCESS)).rejects.toMatchObject({
+            await expect(fetchBookingStatus("rid-x", SESSION)).rejects.toMatchObject({
                 code: "not-found",
             });
         });
@@ -321,7 +321,7 @@ describe("dispatcher tracking", () => {
         it("POSTs the cancel and returns the terminal state", async () => {
             const terminal = summary({ status: "cancelled" });
             const impl = mockFetchOnce(200, terminal);
-            const result = await cancelBookingRequest("rid-1", ACCESS);
+            const result = await cancelBookingRequest("rid-1", SESSION);
             expect(result).toEqual(terminal);
             const [url, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
             expect(url).toBe("/api/book/requests/rid-1/cancel");
@@ -331,7 +331,7 @@ describe("dispatcher tracking", () => {
         it("carries the current state on 409", async () => {
             const terminal = summary({ status: "cancelled" });
             mockFetchOnce(409, { error: "Booking request is already final", ...terminal });
-            const error = await cancelBookingRequest("rid-1", ACCESS).catch((e: unknown) => e);
+            const error = await cancelBookingRequest("rid-1", SESSION).catch((e: unknown) => e);
             expect(error).toBeInstanceOf(BookingTrackerError);
             expect((error as BookingTrackerError).code).toBe("conflict");
             expect((error as BookingTrackerError).current).toEqual(terminal);
@@ -339,7 +339,7 @@ describe("dispatcher tracking", () => {
     });
 
     describe("mintBookingRequest", () => {
-        const pair = { access_token: "a", refresh_token: "r" };
+        const MINT_SESSION = "mint-session-id";
 
         it("POSTs the mint body and returns the link", async () => {
             const impl = mockFetchOnce(201, {
@@ -351,7 +351,7 @@ describe("dispatcher tracking", () => {
                 ticketId: 42,
                 agentIds: [7],
                 appointmentTypeId: 3,
-                haloTokenPair: pair,
+                sessionId: MINT_SESSION,
             });
             expect(result).toEqual({
                 rid: "rid-9",
@@ -364,7 +364,7 @@ describe("dispatcher tracking", () => {
                 ticketId: 42,
                 agentIds: [7],
                 appointmentTypeId: 3,
-                haloTokenPair: pair,
+                sessionId: MINT_SESSION,
                 // Matches the client's -0 normalization on UTC machines.
                 dispatcherUtcOffset: -new Date().getTimezoneOffset() || 0,
             });
@@ -380,7 +380,7 @@ describe("dispatcher tracking", () => {
                 ticketId: 42,
                 agentIds: [7],
                 appointmentTypeId: 3,
-                haloTokenPair: pair,
+                sessionId: MINT_SESSION,
                 dispatcherUtcOffset: -300,
             });
             const [, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
@@ -395,7 +395,7 @@ describe("dispatcher tracking", () => {
                 ticketId: 0,
                 agentIds: [],
                 appointmentTypeId: 0,
-                haloTokenPair: pair,
+                sessionId: MINT_SESSION,
             }).catch((e: unknown) => e);
             expect(error).toBeInstanceOf(BookingTrackerError);
             expect((error as BookingTrackerError).code).toBe("invalid-request");
@@ -404,7 +404,6 @@ describe("dispatcher tracking", () => {
     });
 
     describe("resendBookingRequest", () => {
-        const pair = { access_token: "a", refresh_token: "r" };
         const fresh = { rid: "rid-new", token: "tok-new", expiresAt: "2026-10-10T00:00:00.000Z" };
 
         function mockSequence(first: Response, second?: Response | Error) {
@@ -426,24 +425,26 @@ describe("dispatcher tracking", () => {
             );
             const result = await resendBookingRequest({
                 previous: summary(),
-                haloTokenPair: pair,
-                accessToken: ACCESS,
+                sessionId: SESSION,
             });
             expect(result).toEqual({ ...fresh, oldInvalidated: true });
             expect(impl).toHaveBeenCalledTimes(2);
             const [mintUrl, mintInit] = impl.mock.calls[0] as unknown as [string, RequestInit];
             expect(mintUrl).toBe("/api/book/requests");
-            expect(JSON.parse(mintInit.body as string)).toMatchObject({ ticketId: 42 });
-            const [cancelUrl] = impl.mock.calls[1] as unknown as [string];
+            expect(JSON.parse(mintInit.body as string)).toMatchObject({
+                ticketId: 42,
+                sessionId: SESSION,
+            });
+            const [cancelUrl, cancelInit] = impl.mock.calls[1] as unknown as [string, RequestInit];
             expect(cancelUrl).toBe("/api/book/requests/rid-1/cancel");
+            expect(authHeader(cancelInit)).toBe(`Bearer ${SESSION}`);
         });
 
         it("skips the cancel for terminal predecessors", async () => {
             const impl = mockSequence(new Response(JSON.stringify(fresh), { status: 201 }));
             const result = await resendBookingRequest({
                 previous: summary({ status: "expired" }),
-                haloTokenPair: pair,
-                accessToken: ACCESS,
+                sessionId: SESSION,
             });
             expect(result).toEqual({ ...fresh, oldInvalidated: true });
             expect(impl).toHaveBeenCalledTimes(1);
@@ -461,8 +462,7 @@ describe("dispatcher tracking", () => {
             );
             const result = await resendBookingRequest({
                 previous: summary(),
-                haloTokenPair: pair,
-                accessToken: ACCESS,
+                sessionId: SESSION,
             });
             expect(result.oldInvalidated).toBe(true);
         });
@@ -474,8 +474,7 @@ describe("dispatcher tracking", () => {
             );
             const result = await resendBookingRequest({
                 previous: summary(),
-                haloTokenPair: pair,
-                accessToken: ACCESS,
+                sessionId: SESSION,
             });
             expect(result).toEqual({ ...fresh, oldInvalidated: false });
         });

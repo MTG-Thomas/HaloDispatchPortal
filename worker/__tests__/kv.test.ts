@@ -166,6 +166,36 @@ describe("claim-on-load and single-book redeem", () => {
 });
 
 describe("listBookingRequests", () => {
+    it("stores the minting session id when minted with one", async () => {
+        const kv = fakeKv();
+        const record = await createBookingRequest(kv, {
+            rid: "rid-sess",
+            ticketId: 42,
+            agentIds: [7],
+            appointmentTypeId: 3,
+            sealedTokens: await sealTokenPair(pair(), SECRET),
+            exp: 1_790_003_600,
+            sessionId: "sess-1",
+        });
+        expect(record.sessionId).toBe("sess-1");
+        await expect(getBookingRequest(kv, "rid-sess")).resolves.toMatchObject({
+            sessionId: "sess-1",
+        });
+    });
+
+    it("omits the session id for legacy pair-minted records", async () => {
+        const kv = fakeKv();
+        const record = await createBookingRequest(kv, {
+            rid: "rid-legacy",
+            ticketId: 42,
+            agentIds: [7],
+            appointmentTypeId: 3,
+            sealedTokens: await sealTokenPair(pair(), SECRET),
+            exp: 1_790_003_600,
+        });
+        expect(record.sessionId).toBeUndefined();
+    });
+
     it("stores the dispatcher offset when minted with one", async () => {
         const kv = fakeKv();
         const record = await createBookingRequest(kv, {

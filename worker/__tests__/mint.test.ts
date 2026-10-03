@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it } from "vitest";
 import worker, { validateMintRequest, type BookingEnv } from "../entry";
-import { getBookingRequest } from "../kv";
+import { getBookingRequest, openTokenPair } from "../kv";
+import { createDispatcherSession, refreshDispatcherSession } from "../session";
 import { resetRateLimitsForTests } from "../ratelimit";
 import { verifyBookingToken } from "../token";
 import { fakeKv } from "./fake-kv";
@@ -24,6 +25,25 @@ function goodBody() {
         agentIds: [7, 9],
         appointmentTypeId: 3,
         haloTokenPair: { ...GOOD_PAIR },
+    };
+}
+
+/** Session-credential mint body (no raw pair on the wire). */
+function goodSessionBody(sessionId: unknown) {
+    return {
+        ticketId: 42,
+        agentIds: [7, 9],
+        appointmentTypeId: 3,
+        sessionId,
+    };
+}
+
+/** Mint body with neither credential. */
+function noCredentialBody() {
+    return {
+        ticketId: 42,
+        agentIds: [7, 9],
+        appointmentTypeId: 3,
     };
 }
 
@@ -94,7 +114,6 @@ describe("validateMintRequest", () => {
     it("rejects token pairs without both tokens", () => {
         const cases = [
             null,
-            undefined,
             {},
             { access_token: "a" },
             { refresh_token: "r" },
@@ -108,6 +127,33 @@ describe("validateMintRequest", () => {
                 expect(result.details).toContain(
                     "haloTokenPair must include non-empty access_token and refresh_token",
                 );
+            }
+        }
+    });
+
+    it("requires exactly one credential: sessionId or haloTokenPair", () => {
+        const missing = validateMintRequest(noCredentialBody());
+        expect(missing.ok).toBe(false);
+        if (!missing.ok) {
+            expect(missing.details).toContain(
+                "sessionId or haloTokenPair with non-empty access_token and refresh_token is required",
+            );
+        }
+
+        const both = validateMintRequest({ ...goodBody(), sessionId: "sess-1" });
+        expect(both.ok).toBe(false);
+        if (!both.ok) {
+            expect(both.details).toContain("sessionId and haloTokenPair are mutually exclusive");
+        }
+    });
+
+    it("accepts a sessionId credential and rejects shapeless ones", () => {
+        expect(validateMintRequest(goodSessionBody("sess-1"))).toMatchObject({ ok: true });
+        for (const sessionId of ["", 42, null]) {
+            const result = validateMintRequest(goodSessionBody(sessionId));
+            expect(result.ok).toBe(false);
+            if (!result.ok) {
+                expect(result.details).toContain("sessionId must be a non-empty string");
             }
         }
     });
@@ -224,6 +270,29 @@ describe("mint endpoint", () => {
         expect(json.error).toBe("Invalid booking request");
         expect(json.details).toContain("bufferMin must be an integer between 0 and 60");
     });
+
+    it("mints from a vault session, binding the record to it", async () => {
+        const testEnv = env();
+        const created = await createDispatcherSession(
+            testEnv.BOOKING_REQUESTS,
+            { ...GOOD_PAIR },
+            SECRET,
+        );
+        const { status, json } = await mint(testEnv, goodSessionBody(created.sessionId));
+        expect(status).toBe(201);
+        expect(typeof json.token).toBe("string");
+        const record = await getBookingRequest(testEnv.BOOKING_REQUESTS, String(json.rid));
+        expect(record?.sessionId).toBe(created.sessionId);
+        await expect(openTokenPair(record!.sealedTokens, SECRET)).resolves.toMatchObject({
+            access_token: GOOD_PAIR.access_token,
+        });
+    });
+
+    it("rejects minting from a dead session with 401", async () => {
+        const { status, json } = await mint(env(), goodSessionBody("dead-session"));
+        expect(status).toBe(401);
+        expect(json.error).toBe("Unauthorized");
+    });
 });
 
 describe("status and cancel endpoints", () => {
@@ -283,6 +352,83 @@ describe("status and cancel endpoints", () => {
             testEnv,
         );
         expect(((await status.json()) as Record<string, unknown>).status).toBe("cancelled");
+    });
+
+    it("serves status and cancel to the minting session id", async () => {
+        const testEnv = env();
+        const created = await createDispatcherSession(
+            testEnv.BOOKING_REQUESTS,
+            { ...GOOD_PAIR },
+            SECRET,
+        );
+        const { json } = await mint(testEnv, goodSessionBody(created.sessionId));
+        const statusUrl = `https://portal.test/api/book/requests/${json.rid}/status`;
+        const cancelUrl = `https://portal.test/api/book/requests/${json.rid}/cancel`;
+
+        // A stranger session is rejected; the minting session is accepted.
+        const stranger = await createDispatcherSession(
+            testEnv.BOOKING_REQUESTS,
+            { access_token: "other-access", refresh_token: "other-refresh" },
+            SECRET,
+        );
+        const denied = await worker.fetch(
+            new Request(statusUrl, {
+                headers: { Authorization: `Bearer ${stranger.sessionId}` },
+            }),
+            testEnv,
+        );
+        expect(denied.status).toBe(401);
+
+        const authorized = await worker.fetch(
+            new Request(statusUrl, {
+                headers: { Authorization: `Bearer ${created.sessionId}` },
+            }),
+            testEnv,
+        );
+        expect(authorized.status).toBe(200);
+        expect(JSON.stringify(await authorized.json())).not.toContain("dispatcher-access");
+
+        // The binding survives pair rotation: reseal the session and the
+        // same id still authorizes (no token-equality fallback involved).
+        await refreshDispatcherSession(testEnv.BOOKING_REQUESTS, created.sessionId, SECRET, {
+            access_token: "rotated-access",
+            refresh_token: "rotated-refresh",
+        });
+        const afterRotation = await worker.fetch(
+            new Request(statusUrl, {
+                headers: { Authorization: `Bearer ${created.sessionId}` },
+            }),
+            testEnv,
+        );
+        expect(afterRotation.status).toBe(200);
+
+        const cancelled = await worker.fetch(
+            new Request(cancelUrl, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${created.sessionId}` },
+            }),
+            testEnv,
+        );
+        expect(cancelled.status).toBe(200);
+        expect(((await cancelled.json()) as Record<string, unknown>).status).toBe("cancelled");
+    });
+
+    it("lets a live session adopt pre-vault rows sealed with the same pair", async () => {
+        const testEnv = env();
+        // Legacy mint: no session binding on the record.
+        const { json } = await mint(testEnv, goodBody());
+        const created = await createDispatcherSession(
+            testEnv.BOOKING_REQUESTS,
+            { ...GOOD_PAIR },
+            SECRET,
+        );
+        const authorized = await worker.fetch(
+            new Request(`https://portal.test/api/book/requests/${json.rid}/status`, {
+                headers: { Authorization: `Bearer ${created.sessionId}` },
+            }),
+            testEnv,
+        );
+        expect(authorized.status).toBe(200);
     });
 
     it("returns 404 for unknown rids", async () => {

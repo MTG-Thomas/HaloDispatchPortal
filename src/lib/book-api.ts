@@ -252,8 +252,8 @@ export async function fetchBookSlots(args: FetchBookSlotsArgs): Promise<BookSlot
 
 /* --------------------------------------------------------------------- */
 /* Dispatcher tracking (slice 3): list / status / cancel / resend.        */
-/* Same-origin Worker BFF; dispatcher calls authenticate with the Halo    */
-/* access token sealed at mint time (see the Worker status/cancel auth).  */
+/* Same-origin Worker BFF; dispatcher calls authenticate with the opaque  */
+/* vault session id (see src/lib/session-api.ts) — never a Halo token.   */
 /* --------------------------------------------------------------------- */
 
 /** Worker-side request state; `pending` splits into sent/clicked client-side. */
@@ -389,7 +389,7 @@ async function throwTrackerForResponse(response: Response): Promise<never> {
     if (response.status === 401) {
         throw new BookingTrackerError(
             "unauthorized",
-            "Your sign-in changed since this link was created. Mint a fresh link.",
+            "Your session expired. Please sign in again.",
             401,
         );
     }
@@ -427,13 +427,13 @@ interface TrackerFetchOptions {
 
 async function dispatcherFetch(
     path: string,
-    accessToken: string,
+    sessionId: string,
     init: RequestInit = {},
 ): Promise<Response> {
     let response: Response;
     try {
         const headers = new Headers(init.headers);
-        headers.set("Authorization", `Bearer ${accessToken}`);
+        headers.set("Authorization", `Bearer ${sessionId}`);
         response = await fetch(path, { ...init, headers });
     } catch (error) {
         if (error instanceof Error && error.name === "AbortError") throw error;
@@ -450,10 +450,10 @@ async function dispatcherFetch(
 
 /** List every request the signed-in dispatcher minted, newest first. */
 export async function fetchBookingRequests(
-    accessToken: string,
+    sessionId: string,
     options: TrackerFetchOptions = {},
 ): Promise<BookingRequestSummary[]> {
-    const response = await dispatcherFetch(`${BOOK_API_BASE}/requests`, accessToken, {
+    const response = await dispatcherFetch(`${BOOK_API_BASE}/requests`, sessionId, {
         signal: options.signal,
     });
     const body = (await response.json()) as unknown;
@@ -472,12 +472,12 @@ export async function fetchBookingRequests(
 /** Read one request's tracking state (drives status chips after actions). */
 export async function fetchBookingStatus(
     rid: string,
-    accessToken: string,
+    sessionId: string,
     options: TrackerFetchOptions = {},
 ): Promise<BookingRequestSummary> {
     const response = await dispatcherFetch(
         `${BOOK_API_BASE}/requests/${encodeURIComponent(rid)}/status`,
-        accessToken,
+        sessionId,
         { signal: options.signal },
     );
     const summary = parseBookingSummary((await response.json()) as unknown);
@@ -493,12 +493,12 @@ export async function fetchBookingStatus(
 /** Cancel an open request; 409s carry the now-current terminal state. */
 export async function cancelBookingRequest(
     rid: string,
-    accessToken: string,
+    sessionId: string,
     options: TrackerFetchOptions = {},
 ): Promise<BookingRequestSummary> {
     const response = await dispatcherFetch(
         `${BOOK_API_BASE}/requests/${encodeURIComponent(rid)}/cancel`,
-        accessToken,
+        sessionId,
         { method: "POST", signal: options.signal },
     );
     const summary = parseBookingSummary((await response.json()) as unknown);
@@ -511,17 +511,15 @@ export async function cancelBookingRequest(
     return summary;
 }
 
-/** Minimal token pair the Worker seals at mint time (HaloTokens satisfies). */
-export interface DispatcherTokenPair {
-    access_token: string;
-    refresh_token: string;
-}
-
 export interface MintBookingArgs {
     ticketId: number;
     agentIds: number[];
     appointmentTypeId: number;
-    haloTokenPair: DispatcherTokenPair;
+    /**
+     * Opaque vault session id. The Worker seals the vaulted Halo pair into
+     * the booking record; raw tokens never ride the mint call.
+     */
+    sessionId: string;
     /**
      * Dispatcher-local minutes east of UTC. Defaults to this browser's
      * offset; the Worker enforces business hours in it so a crafted
@@ -537,11 +535,10 @@ export interface MintBookingResult {
     expiresAt: string;
 }
 
-/** Mint a booking link (no dispatcher header: the pair rides in the body). */
+/** Mint a booking link (no dispatcher header: the session id rides in the body). */
 export async function mintBookingRequest(args: MintBookingArgs): Promise<MintBookingResult> {
     // `|| 0` normalizes -0 (UTC machines) to 0 for a stable wire value.
-    const dispatcherUtcOffset =
-        (args.dispatcherUtcOffset ?? -new Date().getTimezoneOffset()) || 0;
+    const dispatcherUtcOffset = (args.dispatcherUtcOffset ?? -new Date().getTimezoneOffset()) || 0;
     let response: Response;
     try {
         response = await fetch(`${BOOK_API_BASE}/requests`, {
@@ -551,7 +548,7 @@ export async function mintBookingRequest(args: MintBookingArgs): Promise<MintBoo
                 ticketId: args.ticketId,
                 agentIds: args.agentIds,
                 appointmentTypeId: args.appointmentTypeId,
-                haloTokenPair: args.haloTokenPair,
+                sessionId: args.sessionId,
                 dispatcherUtcOffset,
             }),
             signal: args.signal,
@@ -583,8 +580,7 @@ export async function mintBookingRequest(args: MintBookingArgs): Promise<MintBoo
 
 export interface ResendBookingArgs {
     previous: BookingRequestSummary;
-    haloTokenPair: DispatcherTokenPair;
-    accessToken: string;
+    sessionId: string;
     dispatcherUtcOffset?: number;
     signal?: AbortSignal;
 }
@@ -607,7 +603,7 @@ export async function resendBookingRequest(args: ResendBookingArgs): Promise<Res
         ticketId: args.previous.ticketId,
         agentIds: args.previous.agentIds,
         appointmentTypeId: args.previous.appointmentTypeId,
-        haloTokenPair: args.haloTokenPair,
+        sessionId: args.sessionId,
         dispatcherUtcOffset: args.dispatcherUtcOffset,
         signal: args.signal,
     });
@@ -615,7 +611,7 @@ export async function resendBookingRequest(args: ResendBookingArgs): Promise<Res
         return { ...fresh, oldInvalidated: true };
     }
     try {
-        await cancelBookingRequest(args.previous.rid, args.accessToken, { signal: args.signal });
+        await cancelBookingRequest(args.previous.rid, args.sessionId, { signal: args.signal });
         return { ...fresh, oldInvalidated: true };
     } catch (error) {
         if (error instanceof BookingTrackerError && error.code === "conflict") {

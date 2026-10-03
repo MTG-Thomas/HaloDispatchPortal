@@ -78,6 +78,12 @@ export interface BookingRequestRecord {
     clickedAt?: string;
     /** Halo appointment id created by the single-book redeem, when booked. */
     bookedAppointmentId?: number;
+    /**
+     * Vault session that minted this request (see `./session.ts`). Present
+     * on session-minted records so tracking authorizes by opaque session id;
+     * legacy pair-minted records omit it and keep the access-token fallback.
+     */
+    sessionId?: string;
 }
 
 export interface NewBookingRequest {
@@ -89,6 +95,7 @@ export interface NewBookingRequest {
     exp: number;
     businessOffsetMin?: number;
     bufferMin?: number;
+    sessionId?: string;
 }
 
 /** Booking links live 7 days; KV records expire with them. */
@@ -205,6 +212,7 @@ export async function createBookingRequest(
             ? { businessOffsetMin: input.businessOffsetMin }
             : {}),
         ...(input.bufferMin !== undefined ? { bufferMin: input.bufferMin } : {}),
+        ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
     };
     await kv.put(key, JSON.stringify(record), { expirationTtl: BOOKING_REQUEST_TTL_SECONDS });
     return record;

@@ -8,6 +8,14 @@ import {
     savePkceRequest,
 } from "./pkce";
 import { isAllowedServerUrl } from "../../lib/server-url";
+import {
+    createDispatcherSession,
+    expireDispatcherSession,
+    fetchDispatcherSession,
+    refreshDispatcherSession,
+    DispatcherSessionError,
+    type VaultTokenPair,
+} from "../../lib/session-api";
 
 /**
  * Fail-closed guard: the auth server receives authorization codes and
@@ -22,8 +30,29 @@ function isUsableAuthServer(authServer: string): boolean {
     });
 }
 
-// Token storage keys
-const TOKEN_STORAGE_KEY = "halo-dispatch-tokens";
+/**
+ * Legacy pre-vault key: raw Halo tokens at rest. Adopted into memory and
+ * removed on first read after the upgrade; never written again.
+ */
+const LEGACY_TOKEN_STORAGE_KEY = "halo-dispatch-tokens";
+
+/**
+ * The only credential persisted client-side: the opaque vault session id
+ * (+ its expiry). No access/refresh token is ever written to storage.
+ */
+export const SESSION_STORAGE_KEY = "halo-dispatch-session";
+
+export interface DispatcherSessionRef {
+    sessionId: string;
+    expiresAt: string;
+}
+
+/**
+ * Live Halo pair for direct Halo API calls. Memory-only for the page
+ * lifetime: repopulated from the vault session after a reload, never
+ * persisted. The vault (Worker KV, AES-GCM-sealed) is the durable copy.
+ */
+let memoryTokens: HaloTokens | null = null;
 
 /**
  * Clock-skew / early-expiry window. Tokens are treated as expired this far
@@ -51,29 +80,95 @@ function rememberProcessedCode(code: string): void {
     processedCodes.add(code);
 }
 
-export function loadTokens(): HaloTokens | null {
+function removeLegacyStoredTokens(): void {
     try {
-        const stored = localStorage.getItem(TOKEN_STORAGE_KEY);
+        localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY);
+    } catch {
+        // Storage failures fail closed to a memory-only session.
+    }
+}
+
+/**
+ * Live pair (memory, plus one-time adoption of a pre-vault persisted set).
+ * The legacy key is deleted on first read so no token remains at rest.
+ */
+export function loadTokens(): HaloTokens | null {
+    if (memoryTokens) {
+        return memoryTokens;
+    }
+    try {
+        const stored = localStorage.getItem(LEGACY_TOKEN_STORAGE_KEY);
         if (stored) {
-            return JSON.parse(stored);
+            const parsed = JSON.parse(stored) as HaloTokens;
+            removeLegacyStoredTokens();
+            if (parsed?.access_token) {
+                memoryTokens = parsed;
+                return memoryTokens;
+            }
         }
     } catch (error) {
         console.error(
             "Failed to parse stored tokens:",
             error instanceof Error ? error.message : "Unknown error",
         );
-        clearTokens();
+        removeLegacyStoredTokens();
     }
     return null;
 }
 
 export function saveTokens(tokens: HaloTokens): void {
-    const stamped: HaloTokens = { ...tokens, obtained_at: Date.now() };
-    localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(stamped));
+    memoryTokens = { ...tokens, obtained_at: Date.now() };
+    removeLegacyStoredTokens();
 }
 
 export function clearTokens(): void {
-    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    memoryTokens = null;
+    clearDispatcherSession();
+    removeLegacyStoredTokens();
+}
+
+/** Persisted vault session ref, or null when signed out / corrupt / expired-shape. */
+export function loadDispatcherSession(): DispatcherSessionRef | null {
+    try {
+        const stored = localStorage.getItem(SESSION_STORAGE_KEY);
+        if (!stored) {
+            return null;
+        }
+        const parsed = JSON.parse(stored) as Partial<DispatcherSessionRef>;
+        if (
+            typeof parsed.sessionId !== "string" ||
+            !parsed.sessionId ||
+            typeof parsed.expiresAt !== "string" ||
+            !parsed.expiresAt
+        ) {
+            clearDispatcherSession();
+            return null;
+        }
+        return { sessionId: parsed.sessionId, expiresAt: parsed.expiresAt };
+    } catch {
+        clearDispatcherSession();
+        return null;
+    }
+}
+
+export function saveDispatcherSession(ref: DispatcherSessionRef): void {
+    localStorage.setItem(
+        SESSION_STORAGE_KEY,
+        JSON.stringify({ sessionId: ref.sessionId, expiresAt: ref.expiresAt }),
+    );
+}
+
+export function clearDispatcherSession(): void {
+    try {
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch {
+        // Storage failures fail closed to a memory-only session.
+    }
+}
+
+/** True when a vault session id is persisted (tracking survives reload). */
+export function hasDispatcherSession(): boolean {
+    return loadDispatcherSession() !== null;
 }
 
 export function clearProcessedCodes(): void {
@@ -137,16 +232,111 @@ export function isAuthenticated(): boolean {
 }
 
 /**
- * Ensure a fresh access token: no-op when the current one is outside the
- * skew window, otherwise attempts a refresh. Returns true when a usable
- * token set is stored afterwards.
+ * Create-or-refresh the vault session behind the persisted id. Best-effort:
+ * the BFF may be unreachable (local dev without the Worker), so failures
+ * only warn — memory tokens carry the page lifetime either way. Never
+ * throws. A stale id (vault rotated/expired) falls back to a fresh create.
+ */
+async function persistVaultSession(tokens: HaloTokens): Promise<void> {
+    const pair: VaultTokenPair = {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        expires_in: tokens.expires_in,
+        token_type: tokens.token_type,
+        scope: tokens.scope,
+        obtained_at: tokens.obtained_at,
+    };
+    try {
+        const existing = loadDispatcherSession();
+        if (existing) {
+            try {
+                saveDispatcherSession(await refreshDispatcherSession(existing.sessionId, pair));
+                return;
+            } catch (error) {
+                if (!(error instanceof DispatcherSessionError) || error.code !== "unauthorized") {
+                    throw error;
+                }
+                clearDispatcherSession();
+            }
+        }
+        saveDispatcherSession(await createDispatcherSession(pair));
+    } catch (error) {
+        console.warn(
+            "Dispatcher session persist failed; continuing with a memory-only session:",
+            error instanceof Error ? error.message : "Unknown error",
+        );
+    }
+}
+
+/**
+ * Repopulate memory tokens from the persisted vault session after a reload.
+ * Returns true when memory holds a pair afterwards (possibly stale — the
+ * caller still runs the normal expiry/refresh checks). An expired vault
+ * session clears the stored id, failing closed to re-login. Never throws.
+ */
+export async function restoreDispatcherSession(): Promise<boolean> {
+    const current = loadTokens();
+    if (current && !isTokenExpiringSoon(current)) {
+        return true;
+    }
+    const existing = loadDispatcherSession();
+    if (!existing) {
+        return false;
+    }
+    try {
+        const used = await fetchDispatcherSession(existing.sessionId);
+        // Preserve the vaulted age (no re-stamp): proactive refresh must see
+        // the real token age, not the reload time.
+        memoryTokens = {
+            access_token: used.haloTokenPair.access_token,
+            refresh_token: used.haloTokenPair.refresh_token,
+            expires_in:
+                typeof used.haloTokenPair.expires_in === "number"
+                    ? used.haloTokenPair.expires_in
+                    : 0,
+            token_type: used.haloTokenPair.token_type ?? "Bearer",
+            scope: used.haloTokenPair.scope ?? "all:standard offline_access",
+            obtained_at:
+                typeof used.haloTokenPair.obtained_at === "number"
+                    ? used.haloTokenPair.obtained_at
+                    : undefined,
+        };
+        removeLegacyStoredTokens();
+        return true;
+    } catch (error) {
+        if (error instanceof DispatcherSessionError && error.code === "unauthorized") {
+            clearDispatcherSession();
+        }
+        return false;
+    }
+}
+
+/**
+ * Ensure a fresh access token: restores from the vault session when memory
+ * is empty (post-reload), no-op when the current pair is outside the skew
+ * window, otherwise attempts a refresh. Returns true when a usable token
+ * set is stored afterwards.
  */
 export async function ensureFreshToken(config: AuthConfig): Promise<boolean> {
-    const tokens = loadTokens();
-    if (!tokens?.refresh_token) {
+    let tokens = loadTokens();
+    if (!tokens) {
+        if (!(await restoreDispatcherSession())) {
+            return false;
+        }
+        tokens = loadTokens();
+        if (!tokens) {
+            return false;
+        }
+    }
+    if (!tokens.refresh_token) {
         return false;
     }
     if (!isTokenExpiringSoon(tokens)) {
+        // Backfill the vault behind an adopted/dev pair so tracking works
+        // even before the first Halo refresh.
+        if (!loadDispatcherSession()) {
+            await persistVaultSession(tokens);
+        }
         return true;
     }
     return refreshToken(config);
@@ -238,6 +428,9 @@ export async function handleCallback(
 
         const tokens = (await tokenResponse.json()) as HaloTokens;
         saveTokens(tokens);
+        // Vault the pair behind the persisted session id (best-effort: login
+        // still succeeds when the BFF is unreachable).
+        await persistVaultSession(loadTokens() as HaloTokens);
 
         return true;
     } catch (error) {
@@ -299,7 +492,11 @@ export async function refreshToken(config: AuthConfig): Promise<boolean> {
             // session so transient failures can retry.
             if (await isInvalidGrant(response)) {
                 console.warn("Refresh token is invalid/expired, clearing authentication");
+                const session = loadDispatcherSession();
                 clearTokens();
+                if (session) {
+                    void expireDispatcherSession(session.sessionId);
+                }
             }
             return false;
         }
@@ -310,6 +507,8 @@ export async function refreshToken(config: AuthConfig): Promise<boolean> {
             ...newTokens,
             refresh_token: newTokens.refresh_token || tokens.refresh_token,
         });
+        // Reseal the rotated pair into the vault (best-effort).
+        await persistVaultSession(loadTokens() as HaloTokens);
         return true;
     } catch (error) {
         // Network-level failure: keep stored tokens so a later retry or a
@@ -323,10 +522,15 @@ export async function refreshToken(config: AuthConfig): Promise<boolean> {
 }
 
 export function logout(): void {
+    const session = loadDispatcherSession();
     clearTokens();
     // Clear processed codes and any pending PKCE material on logout
     processedCodes.clear();
     clearPkceRequest();
+    // Best-effort server expire; local state is already cleared.
+    if (session) {
+        void expireDispatcherSession(session.sessionId);
+    }
     // Redirect to login page
     if (window.location.pathname !== "/login") {
         window.location.href = "/login";

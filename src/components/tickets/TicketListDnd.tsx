@@ -64,7 +64,7 @@ import type { Ticket } from "@/types";
 import { draggable } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { toast } from "sonner";
-import { loadTokens } from "@/services/auth/authService";
+import { loadDispatcherSession } from "@/services/auth/authService";
 import type { ColumnConfig } from "@/stores/preferencesStore";
 
 interface DragInput {
@@ -447,8 +447,8 @@ function BookingLinkButton({ ticket, onMinted }: { ticket: EnrichedTicket; onMin
     const [busy, setBusy] = useState(false);
 
     const copyLink = async () => {
-        const tokens = loadTokens();
-        if (!tokens?.access_token || !tokens?.refresh_token) {
+        const session = loadDispatcherSession();
+        if (!session) {
             toast.error("Sign in to Halo before creating a booking link.");
             return;
         }
@@ -471,7 +471,7 @@ function BookingLinkButton({ ticket, onMinted }: { ticket: EnrichedTicket; onMin
                 ticketId: ticket.id,
                 agentIds,
                 appointmentTypeId,
-                haloTokenPair: tokens,
+                sessionId: session.sessionId,
             });
             await navigator.clipboard.writeText(`${window.location.origin}/book/${token}`);
             toast.success("Booking link copied to clipboard.");

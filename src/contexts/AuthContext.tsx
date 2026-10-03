@@ -54,6 +54,16 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         const checkAuth = async () => {
             let authenticated = authService.isAuthenticated();
 
+            // Post-reload: memory tokens are gone but the vault session id
+            // persists — restore the pair before deciding auth state.
+            if (!authenticated && authService.hasDispatcherSession()) {
+                const restored = await authService.restoreDispatcherSession();
+                if (cancelled) return;
+                if (restored) {
+                    authenticated = authService.isAuthenticated();
+                }
+            }
+
             if (
                 !authenticated &&
                 config.authServer &&
