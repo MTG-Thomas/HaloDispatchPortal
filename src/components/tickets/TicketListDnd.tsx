@@ -42,7 +42,15 @@ import { useRowWindowing } from "@/hooks/useRowWindowing";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { cn } from "@/lib/utils";
 import { computeSla } from "@/utils/enrich-ticket";
-import { scoreBreakdown, scoreTicket } from "@/lib/priority-score";
+import {
+    accumulateTenantPriorityIds,
+    resolvePriorityBoostMap,
+    scoreBreakdown,
+    scoreTicket,
+    type TenantPriorityAccumulation,
+} from "@/lib/priority-score";
+import { sortBreachingNext } from "@/lib/sla-escalation";
+import { requestOverdueAlertPermission, useSlaOverdueAlerts } from "@/hooks/useSlaOverdueAlerts";
 import {
     BookingTrackerError,
     bookingDisplayStatus,
@@ -51,14 +59,18 @@ import {
     type BookingRequestSummary,
 } from "@/lib/book-api";
 import { useBookingRequests } from "@/hooks/useBookingRequests";
+import { useBookingNotify } from "@/hooks/useBookingNotify";
+import { Switch } from "@/components/ui/switch";
 import { BookingStatusChip } from "@/components/booking/BookingStatusChip";
 import { OutstandingRequests } from "@/components/booking/OutstandingRequests";
+import { SendBookingLinkMenu } from "@/components/booking/SendBookingLinkMenu";
+import { sendBookingLink, type BookingSendChannel } from "@/lib/send-booking-link";
 import type { EnrichedTicket } from "@/types/halo";
 import type { Ticket } from "@/types";
 import { draggable } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { dropTargetForElements } from "@atlaskit/pragmatic-drag-and-drop/element/adapter";
 import { toast } from "sonner";
-import { loadTokens } from "@/services/auth/authService";
+import { loadDispatcherSession } from "@/services/auth/authService";
 import type { ColumnConfig } from "@/stores/preferencesStore";
 
 interface DragInput {
@@ -77,22 +89,26 @@ interface SortableHeaderProps {
 interface DraggableTicketRowProps {
     ticket: EnrichedTicket;
     visibleColumns: ColumnConfig[];
+    now: Date;
     renderCell: (column: ColumnConfig, ticket: EnrichedTicket) => React.ReactNode;
     booking?: BookingRequestSummary;
     bookingBusy: boolean;
     onBookingResend: (summary: BookingRequestSummary) => void;
     onBookingCancel: (summary: BookingRequestSummary) => void;
+    onBookingSend: (summary: BookingRequestSummary, channel: BookingSendChannel) => void;
     onBookingMinted: () => void;
 }
 
 function DraggableTicketRow({
     ticket,
     visibleColumns,
+    now,
     renderCell,
     booking,
     bookingBusy,
     onBookingResend,
     onBookingCancel,
+    onBookingSend,
     onBookingMinted,
 }: DraggableTicketRowProps) {
     // Convert EnrichedTicket to Ticket format for drag and drop
@@ -114,12 +130,18 @@ function DraggableTicketRow({
     };
 
     const dragRef = useDraggableTicket(dragTicket);
+    const { slaState } = computeSla(ticket.fixbydate, ticket.excludefromsla, ticket.onhold, now);
 
     return (
         <tr
             ref={dragRef}
             key={`${ticket._listId}-${ticket.id}`}
-            className="border-b hover:bg-muted/30 transition-colors cursor-grab active:cursor-grabbing select-none"
+            data-sla-state={slaState}
+            className={cn(
+                "border-b hover:bg-muted/30 transition-colors cursor-grab active:cursor-grabbing select-none",
+                slaState === "overdue" && "bg-red-500/10 hover:bg-red-500/15",
+                slaState === "warning" && "bg-amber-500/10 hover:bg-amber-500/15",
+            )}
         >
             {visibleColumns.map((column) => (
                 <td
@@ -145,6 +167,7 @@ function DraggableTicketRow({
                     busy={bookingBusy}
                     onResend={onBookingResend}
                     onCancel={onBookingCancel}
+                    onSend={onBookingSend}
                     onMinted={onBookingMinted}
                 />
             </td>
@@ -383,8 +406,16 @@ interface SortState {
  * Halo priority chip plus the client-side dispatch score badge. The badge
  * title carries the score breakdown (SLA / age / staleness / priority).
  */
-function PriorityCell({ ticket, now }: { ticket: EnrichedTicket; now: Date }) {
-    const breakdown = scoreBreakdown(ticket, now);
+function PriorityCell({
+    ticket,
+    now,
+    boostMap,
+}: {
+    ticket: EnrichedTicket;
+    now: Date;
+    boostMap: Record<number, number>;
+}) {
+    const breakdown = scoreBreakdown(ticket, now, boostMap);
     const title =
         `Dispatch score ${breakdown.total}/100 — ` +
         `SLA ${Math.round(breakdown.sla)}, age ${Math.round(breakdown.age)}, ` +
@@ -422,8 +453,8 @@ function BookingLinkButton({ ticket, onMinted }: { ticket: EnrichedTicket; onMin
     const [busy, setBusy] = useState(false);
 
     const copyLink = async () => {
-        const tokens = loadTokens();
-        if (!tokens?.access_token || !tokens?.refresh_token) {
+        const session = loadDispatcherSession();
+        if (!session) {
             toast.error("Sign in to Halo before creating a booking link.");
             return;
         }
@@ -446,7 +477,7 @@ function BookingLinkButton({ ticket, onMinted }: { ticket: EnrichedTicket; onMin
                 ticketId: ticket.id,
                 agentIds,
                 appointmentTypeId,
-                haloTokenPair: tokens,
+                sessionId: session.sessionId,
             });
             await navigator.clipboard.writeText(`${window.location.origin}/book/${token}`);
             toast.success("Booking link copied to clipboard.");
@@ -486,15 +517,24 @@ interface BookingCellProps {
     busy: boolean;
     onResend: (summary: BookingRequestSummary) => void;
     onCancel: (summary: BookingRequestSummary) => void;
+    onSend: (summary: BookingRequestSummary, channel: BookingSendChannel) => void;
     onMinted: () => void;
 }
 
 /**
  * Actions cell: the tracking chip (when this ticket has a request) plus
- * resend/cancel. Cancel is open-only; resend also covers expired
+ * resend/cancel/send. Cancel is open-only; resend and send also cover expired
  * (resend-as-new). Booked/cancelled rows show the chip alone.
  */
-function BookingCell({ ticket, summary, busy, onResend, onCancel, onMinted }: BookingCellProps) {
+function BookingCell({
+    ticket,
+    summary,
+    busy,
+    onResend,
+    onCancel,
+    onSend,
+    onMinted,
+}: BookingCellProps) {
     const display = summary ? bookingDisplayStatus(summary) : null;
     const canCancel = summary && display !== null && isBookingOpen(summary);
     const canResend = summary && (isBookingOpen(summary) || display === "expired");
@@ -503,6 +543,13 @@ function BookingCell({ ticket, summary, busy, onResend, onCancel, onMinted }: Bo
         <div className="flex items-center justify-end gap-1">
             {summary && (
                 <BookingStatusChip summary={summary} testId={`booking-status-${ticket.id}`} />
+            )}
+            {canResend && (
+                <SendBookingLinkMenu
+                    ticketId={ticket.id}
+                    disabled={busy}
+                    onSelect={(channel) => onSend(summary, channel)}
+                />
             )}
             {canResend && (
                 <Button
@@ -555,11 +602,22 @@ export function TicketList() {
     const { config } = useConfigStore();
     const { ticketListColumns, setTicketListColumns, setColumnWidth, resetColumns } =
         usePreferencesStore();
+    const { bookingNotifyEnabled, setBookingNotifyEnabled } = usePreferencesStore();
     const [searchTerm, setSearchTerm] = useState("");
     const [sort, setSort] = useState<SortState | null>(null);
     const [queueOpen, setQueueOpen] = useState(false);
+    const [breachingNext, setBreachingNext] = useState(false);
+    const [alertsEnabled, setAlertsEnabled] = useState(() => {
+        try {
+            return localStorage.getItem("halo.slaOverdueAlerts") === "1";
+        } catch {
+            return false;
+        }
+    });
     // Single ticking clock shared by every SLA cell (re-renders once a minute).
     const now = useNow(60_000);
+    // Opt-in browser notification when a loaded ticket newly breaches SLA.
+    useSlaOverdueAlerts(haloTickets, now, alertsEnabled);
     // Dispatcher tracking: latest booking request per ticket (chips) plus the
     // open count for the queue button. Loads silently; list failure only
     // surfaces inside the queue dialog, never over the ticket table.
@@ -568,6 +626,31 @@ export function TicketList() {
         () => booking.requests.filter((row) => isBookingOpen(row)).length,
         [booking.requests],
     );
+    // Unread badge: polls the tracker list on a visibility-aware interval and
+    // diffs snapshots for customer views/bookings. Browser Notifications are
+    // opt-in via the persisted preference, toggled in the queue dialog.
+    const bookingNotify = useBookingNotify({
+        requests: booking.requests,
+        listLoaded: booking.loaded,
+        refresh: booking.refresh,
+        notifyEnabled: bookingNotifyEnabled,
+    });
+
+    const notifyHint =
+        bookingNotify.notifyPermission === "unsupported"
+            ? "Browser notifications are not supported here."
+            : bookingNotify.notifyPermission === "denied"
+              ? "Blocked — allow notifications in browser settings to use this."
+              : bookingNotify.notifyPermission === "granted"
+                ? "You'll be notified when a link is viewed or booked."
+                : "Your browser will ask for permission.";
+
+    const handleNotifyToggle = (enabled: boolean) => {
+        setBookingNotifyEnabled(enabled);
+        if (enabled && bookingNotify.notifyPermission === "default") {
+            void bookingNotify.requestNotifyPermission();
+        }
+    };
 
     const handleBookingResend = async (summary: BookingRequestSummary) => {
         try {
@@ -588,6 +671,34 @@ export function TicketList() {
             toast.success(`Booking request for ticket ${summary.ticketId} cancelled.`);
         } catch {
             toast.error("Failed to cancel booking request.");
+        }
+    };
+
+    const handleBookingSend = async (
+        summary: BookingRequestSummary,
+        channel: BookingSendChannel,
+    ) => {
+        try {
+            const { oldInvalidated, copied } = await sendBookingLink({
+                ticketId: summary.ticketId,
+                channel,
+                origin: window.location.origin,
+                mintFresh: () => booking.resend(summary),
+                open: (href) => {
+                    window.location.href = href;
+                },
+                copyFallback: (url) => navigator.clipboard.writeText(url),
+            });
+            toast.success(
+                channel === "sms"
+                    ? `Opening text message with booking link…${copied ? " Link also copied." : ""}`
+                    : `Opening email with booking link…${copied ? " Link also copied." : ""}`,
+            );
+            if (!oldInvalidated) {
+                toast.warning("The old link is still live — cancel it from the queue.");
+            }
+        } catch {
+            toast.error("Failed to send booking link.");
         }
     };
 
@@ -624,16 +735,44 @@ export function TicketList() {
         });
     }, [haloTickets, searchTerm]);
 
-    // Sort by dispatch priority score when the Priority header was clicked.
-    // Id tiebreak keeps the order deterministic for equal scores.
+    // Stable tenant priority set: the loaded page is a slice, so deriving
+    // the boost map from each page would rescale every priority's boost on
+    // pagination or filter changes. Instead the distinct priority_ids
+    // accumulate across loads (reset on tenant change) — ClientCache has no
+    // priority catalogue, and scoring makes no extra API calls.
+    // Absent/empty ids fall back to DEFAULT_PRIORITY_BOOST_MAP.
+    const tenantKey = `${config.resourceServer} ${config.tenant}`;
+    const [tenantPriorities, setTenantPriorities] = useState<TenantPriorityAccumulation>({
+        key: tenantKey,
+        ids: [],
+    });
+    useEffect(() => {
+        setTenantPriorities((prev) =>
+            accumulateTenantPriorityIds(
+                prev,
+                tenantKey,
+                haloTickets.map((ticket) => ticket.priority_id),
+            ),
+        );
+    }, [tenantKey, haloTickets]);
+    const priorityBoostMap = useMemo(
+        () => resolvePriorityBoostMap(tenantPriorities.ids),
+        [tenantPriorities],
+    );
+
+    // "Breaching next" lane takes precedence over header sorting: SLA band
+    // first, then dispatch score. Otherwise sort by dispatch priority score
+    // when the Priority header was clicked (id tiebreak keeps it deterministic).
     const sortedTickets = useMemo(() => {
+        if (breachingNext) return sortBreachingNext(filteredTickets, now, priorityBoostMap);
         if (sort?.columnId !== SCORE_SORT_COLUMN_ID) return filteredTickets;
         const factor = sort.direction === "desc" ? -1 : 1;
         return [...filteredTickets].sort((a, b) => {
-            const diff = scoreTicket(a, now) - scoreTicket(b, now);
+            const diff =
+                scoreTicket(a, now, priorityBoostMap) - scoreTicket(b, now, priorityBoostMap);
             return diff !== 0 ? diff * factor : a.id - b.id;
         });
-    }, [filteredTickets, sort, now]);
+    }, [filteredTickets, breachingNext, sort, now, priorityBoostMap]);
 
     // Calculate total pages
     const totalPages = Math.ceil(totalRecords / pageSize);
@@ -649,8 +788,33 @@ export function TicketList() {
     useEffect(() => {
         resetWindowing();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [currentPage, searchTerm, selectedListIds, sort]);
+    }, [currentPage, searchTerm, selectedListIds, sort, breachingNext]);
     const visibleTickets = sortedTickets.slice(0, visibleCount);
+
+    // Opt-in overdue alerts: enabling requests browser-notification
+    // permission first and only sticks when permission is granted.
+    const handleAlertsToggle = async () => {
+        if (alertsEnabled) {
+            setAlertsEnabled(false);
+            try {
+                localStorage.setItem("halo.slaOverdueAlerts", "0");
+            } catch {
+                /* storage unavailable — preference just won't persist */
+            }
+            return;
+        }
+        const granted = await requestOverdueAlertPermission();
+        if (granted) {
+            setAlertsEnabled(true);
+            try {
+                localStorage.setItem("halo.slaOverdueAlerts", "1");
+            } catch {
+                /* storage unavailable — preference just won't persist */
+            }
+        } else {
+            toast.warning("Browser notifications are blocked — overdue alerts stay off.");
+        }
+    };
 
     // Header-click sort: first click sorts highest score first, then toggles.
     const handleSort = (columnId: string) => {
@@ -734,7 +898,7 @@ export function TicketList() {
                 return <SlaCell ticket={ticket} now={now} />;
 
             case "priority":
-                return <PriorityCell ticket={ticket} now={now} />;
+                return <PriorityCell ticket={ticket} now={now} boostMap={priorityBoostMap} />;
 
             case "team":
                 return <span className="text-xs">{ticket.team}</span>;
@@ -846,6 +1010,26 @@ export function TicketList() {
                                 Reset Columns
                             </Button>
                             <Button
+                                variant={breachingNext ? "default" : "outline"}
+                                size="sm"
+                                onClick={() => setBreachingNext((v) => !v)}
+                                title="Order tickets by SLA breach risk: overdue, then warning, then the rest by dispatch score"
+                                aria-pressed={breachingNext}
+                            >
+                                <AlertTriangle className="h-4 w-4 mr-2" aria-hidden />
+                                Breaching next
+                            </Button>
+                            <Button
+                                variant={alertsEnabled ? "default" : "outline"}
+                                size="sm"
+                                onClick={() => void handleAlertsToggle()}
+                                title="Notify me in the browser when a loaded ticket newly breaches SLA"
+                                aria-pressed={alertsEnabled}
+                            >
+                                <Clock className="h-4 w-4 mr-2" aria-hidden />
+                                Overdue alerts
+                            </Button>
+                            <Button
                                 variant="outline"
                                 size="sm"
                                 onClick={() => setQueueOpen(true)}
@@ -857,6 +1041,16 @@ export function TicketList() {
                                 {openBookingCount > 0 && (
                                     <Badge variant="secondary" className="ml-1 tabular-nums">
                                         {openBookingCount}
+                                    </Badge>
+                                )}
+                                {bookingNotify.unreadCount > 0 && (
+                                    <Badge
+                                        variant="default"
+                                        className="ml-1 tabular-nums"
+                                        title="Links viewed or booked since you last opened the queue"
+                                        aria-label={`${bookingNotify.unreadCount} unread booking updates`}
+                                    >
+                                        {bookingNotify.unreadCount} new
                                     </Badge>
                                 )}
                             </Button>
@@ -957,6 +1151,7 @@ export function TicketList() {
                                                 key={`${ticket._listId}-${ticket.id}`}
                                                 ticket={ticket}
                                                 visibleColumns={visibleColumns}
+                                                now={now}
                                                 renderCell={renderCell}
                                                 booking={booking.byTicket.get(ticket.id)}
                                                 bookingBusy={
@@ -966,6 +1161,7 @@ export function TicketList() {
                                                 }
                                                 onBookingResend={handleBookingResend}
                                                 onBookingCancel={handleBookingCancel}
+                                                onBookingSend={handleBookingSend}
                                                 onBookingMinted={() => void booking.refresh()}
                                             />
                                         ))}
@@ -1005,7 +1201,15 @@ export function TicketList() {
                 </div>
             )}
 
-            <Dialog open={queueOpen} onOpenChange={setQueueOpen}>
+            <Dialog
+                open={queueOpen}
+                onOpenChange={(open) => {
+                    setQueueOpen(open);
+                    if (open) {
+                        bookingNotify.markAllSeen();
+                    }
+                }}
+            >
                 <DialogContent className="sm:max-w-[720px]">
                     <DialogHeader>
                         <DialogTitle>Booking requests</DialogTitle>
@@ -1014,6 +1218,19 @@ export function TicketList() {
                             the old one.
                         </DialogDescription>
                     </DialogHeader>
+                    <div className="flex items-center gap-2 rounded-md border px-3 py-2">
+                        <Switch
+                            id="booking-notify-toggle"
+                            checked={bookingNotifyEnabled}
+                            onCheckedChange={handleNotifyToggle}
+                            disabled={bookingNotify.notifyPermission === "unsupported"}
+                            aria-label="Browser notifications for booking activity"
+                        />
+                        <label htmlFor="booking-notify-toggle" className="text-sm font-medium">
+                            Browser notifications
+                        </label>
+                        <span className="ml-auto text-xs text-muted-foreground">{notifyHint}</span>
+                    </div>
                     <OutstandingRequests tracker={booking} />
                 </DialogContent>
             </Dialog>

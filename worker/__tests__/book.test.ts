@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi, afterEach } from "vitest";
 import worker, { type BookingEnv } from "../entry";
-import { getBookingRequest } from "../kv";
+import { bookingRequestKey, getBookingRequest } from "../kv";
 import { signBookingToken } from "../token";
 import { resetRateLimitsForTests } from "../ratelimit";
 import { fakeKv } from "./fake-kv";
@@ -35,6 +35,32 @@ let ipCounter = 0;
 function freshIp(): string {
     ipCounter += 1;
     return `10.9.0.${ipCounter}`;
+}
+
+/** A future weekday (UTC) safely inside the 14-day slot window. */
+function futureWeekdayDateString(): string {
+    const now = new Date();
+    const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 2));
+    while (day.getUTCDay() === 0 || day.getUTCDay() === 6) {
+        day.setUTCDate(day.getUTCDate() + 1);
+    }
+    return day.toISOString().slice(0, 10);
+}
+
+interface SlotDay {
+    date: string;
+    slots: { agentId: number; start: string; end: string }[];
+}
+
+function dayOrThrow(json: Record<string, unknown>, date: string): SlotDay {
+    const days = json.days as SlotDay[];
+    const day = days.find((d) => d.date === date);
+    if (!day) {
+        throw new Error(
+            `expected slots for ${date}, got ${JSON.stringify(days.map((d) => d.date))}`,
+        );
+    }
+    return day;
 }
 
 interface HaloStub {
@@ -200,10 +226,38 @@ describe("slots endpoint", () => {
         expect(noToken.status).toBe(401);
     });
 
-    it("answers expired tokens with 410 and flips the record", async () => {
+    it("answers expired tokens with 410 without flipping a live record", async () => {
         const testEnv = env();
         stubHalo();
         const { rid } = await mint(testEnv);
+        const expired = await signBookingToken(
+            {
+                rid,
+                ticketId: 42,
+                agentIds: [7, 9],
+                appointmentTypeId: 3,
+                exp: Math.floor(Date.now() / 1000) - 10,
+            },
+            SECRET,
+        );
+        const response = await getSlots(testEnv, rid, expired);
+        expect(response.status).toBe(410);
+        expect(response.json.error).toBe("expired");
+        // The token's own expiry is not authority to expire the record: a
+        // superseded pre-extend token must not disable a renewed link.
+        expect((await getBookingRequest(testEnv.BOOKING_REQUESTS, rid))?.status).toBe("pending");
+    });
+
+    it("flips a record that is itself past exp when an expired token arrives", async () => {
+        const testEnv = env();
+        stubHalo();
+        const { rid } = await mint(testEnv);
+        const record = await getBookingRequest(testEnv.BOOKING_REQUESTS, rid);
+        expect(record?.status).toBe("pending");
+        await testEnv.BOOKING_REQUESTS.put(
+            bookingRequestKey(rid),
+            JSON.stringify({ ...record, exp: Math.floor(Date.now() / 1000) - 10 }),
+        );
         const expired = await signBookingToken(
             {
                 rid,
@@ -308,6 +362,93 @@ describe("slots endpoint", () => {
         const response = await getSlots(testEnv, rid, token);
         expect(response.status).toBe(200);
         expect(stub.calls.some((c) => c.url === `${AUTH}/token`)).toBe(true);
+    });
+
+    it("offers per-agent working hours and caches the directory", async () => {
+        const testEnv = env();
+        const stub = stubHalo({
+            agents: [
+                { id: 7, name: "Dana Dispatcher", workhour_start: 10, workhour_end: 12 },
+                { id: 9, name: "Nina Booker" },
+            ],
+        });
+        const { rid, token } = await mint(testEnv);
+
+        const first = await getSlots(testEnv, rid, token);
+        expect(first.status).toBe(200);
+        type Slot = { agentId: number; start: string; end: string };
+        const all = (first.json.days as { slots: Slot[] }[]).flatMap((d) => d.slots);
+        const custom = all.filter((s) => s.agentId === 7);
+        const fallback = all.filter((s) => s.agentId === 9);
+        expect(custom.length).toBeGreaterThan(0);
+        for (const slot of custom) {
+            expect(new Date(slot.start).getUTCHours()).toBeGreaterThanOrEqual(10);
+            const end = new Date(slot.end);
+            expect(end.getUTCHours() + end.getUTCMinutes() / 60).toBeLessThanOrEqual(12);
+        }
+        // Agent 9 has no schedule: falls back to 09:00.
+        expect(fallback.some((s) => s.start.endsWith("T09:00:00.000Z"))).toBe(true);
+
+        // The second view reuses the cached directory: no second agent fetch.
+        expect((await getSlots(testEnv, rid, token)).status).toBe(200);
+        expect(stub.calls.filter((c) => c.url.includes("/api/agent"))).toHaveLength(1);
+    });
+
+    it("honors the minted buffer when offering slots", async () => {
+        const date = futureWeekdayDateString();
+        const appointments = [
+            {
+                id: 1,
+                agent_id: 7,
+                start_date: `${date}T09:00:00`,
+                end_date: `${date}T10:00:00`,
+                allday: false,
+            },
+        ];
+        const bufferedEnv = env();
+        stubHalo({ appointments });
+        const buffered = await mint(bufferedEnv, { bufferMin: 15 });
+        const bufferedSlots = await getSlots(bufferedEnv, buffered.rid, buffered.token);
+        expect(bufferedSlots.status).toBe(200);
+        const bufferedStarts = dayOrThrow(bufferedSlots.json, date)
+            .slots.filter((s) => s.agentId === 7)
+            .map((s) => s.start);
+        expect(bufferedStarts).not.toContain(`${date}T10:00:00.000Z`);
+        expect(bufferedStarts).toContain(`${date}T10:15:00.000Z`);
+
+        // Control: the same morning without a buffer offers back-to-back.
+        const plainEnv = env();
+        stubHalo({ appointments });
+        const plain = await mint(plainEnv);
+        const plainSlots = await getSlots(plainEnv, plain.rid, plain.token);
+        expect(
+            dayOrThrow(plainSlots.json, date)
+                .slots.filter((s) => s.agentId === 7)
+                .map((s) => s.start),
+        ).toContain(`${date}T10:00:00.000Z`);
+    });
+
+    it("offers nothing for over-capacity agents", async () => {
+        // 08:00-16:00 fills the 8h day; 16:00-17:00 looks free by overlap.
+        const date = futureWeekdayDateString();
+        const testEnv = env();
+        stubHalo({
+            appointments: [
+                {
+                    id: 1,
+                    agent_id: 7,
+                    start_date: `${date}T08:00:00`,
+                    end_date: `${date}T16:00:00`,
+                    allday: false,
+                },
+            ],
+        });
+        const { rid, token } = await mint(testEnv);
+        const response = await getSlots(testEnv, rid, token);
+        expect(response.status).toBe(200);
+        const day = dayOrThrow(response.json, date);
+        expect(day.slots.filter((s) => s.agentId === 7)).toHaveLength(0);
+        expect(day.slots.filter((s) => s.agentId === 9).length).toBeGreaterThan(0);
     });
 });
 
@@ -470,6 +611,78 @@ describe("book endpoint", () => {
         const local = await mint(localEnv, { dispatcherUtcOffset: 120 });
         const booked = await postBook(localEnv, local.rid, { token: local.token, ...body });
         expect(booked.status).toBe(201);
+    });
+
+    it("rejects bookings outside the agent's working hours", async () => {
+        const testEnv = env();
+        stubHalo({
+            agents: [
+                { id: 7, name: "Dana Dispatcher", workhour_start: 10, workhour_end: 12 },
+                { id: 9, name: "Nina Booker" },
+            ],
+        });
+        const { rid, token } = await mint(testEnv);
+        const slots = await getSlots(testEnv, rid, token);
+        type Slot = { agentId: number; start: string; end: string };
+        const all = (slots.json.days as { slots: Slot[] }[]).flatMap((d) => d.slots);
+        // A 09:00 fallback slot exists for agent 9; the same time is
+        // outside agent 7's 10:00-12:00 window.
+        const nine = all.find((s) => s.agentId === 9 && s.start.endsWith("T09:00:00.000Z"));
+        expect(nine).toBeTruthy();
+        const rejected = await postBook(testEnv, rid, {
+            token,
+            agentId: 7,
+            start: nine!.start,
+            end: nine!.end,
+            utcOffset: 0,
+        });
+        expect(rejected.status).toBe(400);
+        expect(rejected.json.error).toBe("invalid-slot");
+    });
+
+    it("blocks buffered back-to-back bookings but keeps the single-book path", async () => {
+        const date = futureWeekdayDateString();
+        const slot = {
+            agentId: 7,
+            start: `${date}T10:00:00.000Z`,
+            end: `${date}T10:30:00.000Z`,
+        };
+        const adjacent = [
+            {
+                id: 2,
+                agent_id: 7,
+                start_date: `${date}T10:30:00`,
+                end_date: `${date}T11:00:00`,
+                allday: false,
+            },
+        ];
+
+        const bufferedEnv = env();
+        const bufferedStub = stubHalo({ appointments: adjacent });
+        const buffered = await mint(bufferedEnv, { bufferMin: 15 });
+        const rejected = await postBook(bufferedEnv, buffered.rid, {
+            token: buffered.token,
+            ...slot,
+            utcOffset: 0,
+        });
+        expect(rejected.status).toBe(409);
+        expect(rejected.json.error).toBe("slot-taken");
+        expect(bufferedStub.posts).toHaveLength(0);
+        expect((await getBookingRequest(bufferedEnv.BOOKING_REQUESTS, buffered.rid))?.status).toBe(
+            "pending",
+        );
+
+        // Control: the same back-to-back booking succeeds without a buffer.
+        const plainEnv = env();
+        stubHalo({ appointments: adjacent });
+        const plain = await mint(plainEnv);
+        const booked = await postBook(plainEnv, plain.rid, {
+            token: plain.token,
+            ...slot,
+            utcOffset: 0,
+        });
+        expect(booked.status).toBe(201);
+        expect(booked.json).toMatchObject({ appointmentId: 555, agentId: 7 });
     });
 });
 

@@ -2,11 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
     BookingTrackerError,
     cancelBookingRequest,
+    extendBookingRequest,
+    fetchBookingAudit,
     fetchBookingRequests,
     resendBookingRequest,
+    type BookingAuditTrail,
     type BookingRequestSummary,
 } from "@/lib/book-api";
-import { loadTokens } from "@/services/auth/authService";
+import { loadDispatcherSession } from "@/services/auth/authService";
 
 export interface BookingResendResult {
     summary: BookingRequestSummary;
@@ -23,6 +26,8 @@ export interface BookingTracker {
     error: string | null;
     /** Rid of the request currently being cancelled/resent, if any. */
     busyRid: string | null;
+    /** True once the first list load completes (successfully). */
+    loaded: boolean;
     refresh: () => Promise<void>;
     /**
      * Cancel an open request. A cancel that races to terminal resolves with
@@ -34,6 +39,15 @@ export interface BookingTracker {
      * the new request summary plus the token (for clipboard copy).
      */
     resend: (previous: BookingRequestSummary) => Promise<BookingResendResult>;
+    /**
+     * Extend an open request's expiry. Resolves with the updated summary
+     * plus the resealed token (for clipboard copy); the old link keeps its
+     * shorter expiry. A raced terminal state is adopted locally, then the
+     * conflict rethrows.
+     */
+    extend: (rid: string, days?: number) => Promise<BookingResendResult>;
+    /** Read one request's audit trail (view count plus the event list). */
+    fetchAudit: (rid: string) => Promise<BookingAuditTrail>;
 }
 
 /**
@@ -47,7 +61,15 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [busyRid, setBusyRid] = useState<string | null>(null);
+    const [loaded, setLoaded] = useState(false);
     const mountedRef = useRef(true);
+    // Synchronous mirror of `requests` for async actions (extend) that must
+    // read the current row outside a state updater. Updated in an effect so
+    // render stays pure; actions always see the last committed list.
+    const requestsRef = useRef<BookingRequestSummary[]>([]);
+    useEffect(() => {
+        requestsRef.current = requests;
+    }, [requests]);
     useEffect(() => {
         mountedRef.current = true;
         return () => {
@@ -56,16 +78,17 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
     }, []);
 
     const refresh = useCallback(async () => {
-        const tokens = loadTokens();
-        if (!tokens?.access_token) {
+        const session = loadDispatcherSession();
+        if (!session) {
             return;
         }
         setLoading(true);
         setError(null);
         try {
-            const rows = await fetchBookingRequests(tokens.access_token);
+            const rows = await fetchBookingRequests(session.sessionId);
             if (mountedRef.current) {
                 setRequests(rows);
+                setLoaded(true);
             }
         } catch (err) {
             if (mountedRef.current) {
@@ -89,13 +112,13 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
     }, [enabled, refresh]);
 
     const cancel = useCallback(async (rid: string): Promise<BookingRequestSummary> => {
-        const tokens = loadTokens();
-        if (!tokens?.access_token) {
+        const session = loadDispatcherSession();
+        if (!session) {
             throw new BookingTrackerError("unauthorized", "Sign in to Halo first.");
         }
         setBusyRid(rid);
         try {
-            const updated = await cancelBookingRequest(rid, tokens.access_token).catch(
+            const updated = await cancelBookingRequest(rid, session.sessionId).catch(
                 (err: unknown) => {
                     // Raced to terminal elsewhere: adopt the current state.
                     if (
@@ -121,8 +144,8 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
 
     const resend = useCallback(
         async (previous: BookingRequestSummary): Promise<BookingResendResult> => {
-            const tokens = loadTokens();
-            if (!tokens?.access_token || !tokens?.refresh_token) {
+            const session = loadDispatcherSession();
+            if (!session) {
                 throw new BookingTrackerError(
                     "unauthorized",
                     "Sign in to Halo before resending a booking link.",
@@ -132,8 +155,7 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
             try {
                 const fresh = await resendBookingRequest({
                     previous,
-                    haloTokenPair: tokens,
-                    accessToken: tokens.access_token,
+                    sessionId: session.sessionId,
                 });
                 const now = new Date().toISOString();
                 const summary: BookingRequestSummary = {
@@ -147,6 +169,8 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
                     exp: Math.floor(Date.parse(fresh.expiresAt) / 1000),
                     clickedAt: null,
                     bookedAppointmentId: null,
+                    viewCount: 0,
+                    ...(previous.occurrences ? { occurrences: previous.occurrences } : {}),
                 };
                 if (mountedRef.current) {
                     setRequests((rows) => [
@@ -172,6 +196,63 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
         [],
     );
 
+    const extend = useCallback(async (rid: string, days?: number): Promise<BookingResendResult> => {
+        const session = loadDispatcherSession();
+        if (!session) {
+            throw new BookingTrackerError("unauthorized", "Sign in to Halo first.");
+        }
+        setBusyRid(rid);
+        try {
+            const renewed = await extendBookingRequest({
+                rid,
+                sessionId: session.sessionId,
+                ...(days === undefined ? {} : { days }),
+            }).catch((err: unknown) => {
+                // Raced to terminal elsewhere: adopt the current state.
+                if (
+                    err instanceof BookingTrackerError &&
+                    err.code === "conflict" &&
+                    err.current &&
+                    mountedRef.current
+                ) {
+                    setRequests((rows) =>
+                        rows.map((row) => (row.rid === rid && err.current ? err.current : row)),
+                    );
+                }
+                throw err;
+            });
+            const exp = Math.floor(Date.parse(renewed.expiresAt) / 1000);
+            const updatedAt = new Date().toISOString();
+            // Read the current row from the committed mirror: updater
+            // functions may run deferred (or twice in StrictMode), so the
+            // result must never be assigned as an updater side effect.
+            const current = requestsRef.current.find((row) => row.rid === rid);
+            if (!current) {
+                throw new BookingTrackerError(
+                    "not-found",
+                    "Booking request is no longer in the list.",
+                );
+            }
+            const summary: BookingRequestSummary = { ...current, exp, updatedAt };
+            if (mountedRef.current) {
+                setRequests((rows) => rows.map((row) => (row.rid === rid ? summary : row)));
+            }
+            return { summary, token: renewed.token, oldInvalidated: true };
+        } finally {
+            if (mountedRef.current) {
+                setBusyRid(null);
+            }
+        }
+    }, []);
+
+    const fetchAudit = useCallback(async (rid: string): Promise<BookingAuditTrail> => {
+        const session = loadDispatcherSession();
+        if (!session) {
+            throw new BookingTrackerError("unauthorized", "Sign in to Halo first.");
+        }
+        return fetchBookingAudit(rid, session.sessionId);
+    }, []);
+
     const byTicket = useMemo(() => {
         const map = new Map<number, BookingRequestSummary>();
         for (const row of requests) {
@@ -182,5 +263,17 @@ export function useBookingRequests(options: { enabled?: boolean } = {}): Booking
         return map;
     }, [requests]);
 
-    return { requests, byTicket, loading, error, busyRid, refresh, cancel, resend };
+    return {
+        requests,
+        byTicket,
+        loading,
+        error,
+        busyRid,
+        loaded,
+        refresh,
+        cancel,
+        resend,
+        extend,
+        fetchAudit,
+    };
 }

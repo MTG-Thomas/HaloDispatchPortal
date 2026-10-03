@@ -34,6 +34,10 @@ interface PreferencesState {
   calendarZoomLevel: CalendarZoomLevel;
   setCalendarZoomLevel: (zoomLevel: CalendarZoomLevel) => void;
 
+  // Booking queue notifications (opt-in browser Notifications)
+  bookingNotifyEnabled: boolean;
+  setBookingNotifyEnabled: (enabled: boolean) => void;
+
   // Column Ordering
   ticketListColumns: ColumnConfig[];
   setTicketListColumns: (columns: ColumnConfig[]) => void;
@@ -75,6 +79,7 @@ export const usePreferencesStore = create<PreferencesState>()(
       selectedResources: [],
       calendarZoomLevel: 100,
       ticketListColumns: defaultColumns,
+      bookingNotifyEnabled: false,
 
       // Agent/Team Selection Actions
       setSelectedResources: (resources) => set({ selectedResources: resources }),
@@ -111,6 +116,9 @@ export const usePreferencesStore = create<PreferencesState>()(
 
       // Calendar Preferences Actions
       setCalendarZoomLevel: (zoomLevel) => set({ calendarZoomLevel: zoomLevel }),
+
+      // Booking notification Actions
+      setBookingNotifyEnabled: (enabled) => set({ bookingNotifyEnabled: enabled }),
 
       // Column Ordering Actions
       setTicketListColumns: (columns) => set({ ticketListColumns: columns }),
@@ -163,6 +171,7 @@ export const usePreferencesStore = create<PreferencesState>()(
           selectedResources: [],
           calendarZoomLevel: 100,
           ticketListColumns: defaultColumns,
+          bookingNotifyEnabled: false,
         }),
     }),
     {
@@ -171,6 +180,7 @@ export const usePreferencesStore = create<PreferencesState>()(
         selectedResources: state.selectedResources,
         calendarZoomLevel: state.calendarZoomLevel,
         ticketListColumns: state.ticketListColumns,
+        bookingNotifyEnabled: state.bookingNotifyEnabled,
       }),
     }
   )

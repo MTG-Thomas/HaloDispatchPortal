@@ -111,6 +111,30 @@ describe("Halo client", () => {
         expect(body.get("refresh_token")).toBe("refresh-xyz");
     });
 
+    it("rotates pairs without a resource server but refuses resource calls", async () => {
+        const fetchImpl: FetchImpl = vi.fn(async () =>
+            Response.json({ access_token: "new-access", expires_in: 3600 }),
+        );
+        const client = createHaloClient({
+            fetchImpl,
+            authServer: "https://auth.halopsa.com",
+            clientId: "client-1",
+        });
+        await expect(
+            client.refreshTokenPair({ access_token: "old", refresh_token: "refresh" }),
+        ).resolves.toMatchObject({ access_token: "new-access", refresh_token: "refresh" });
+        await expect(client.getTicket("new-access", 42)).rejects.toMatchObject({
+            status: 500,
+        });
+        await expect(
+            client.getAppointments("new-access", {
+                startDate: "2026-10-05",
+                endDate: "2026-10-06",
+                agentIds: [7],
+            }),
+        ).rejects.toBeInstanceOf(HaloApiError);
+    });
+
     it("throws HaloApiError on refresh failures", async () => {
         const client = createHaloClient({
             fetchImpl: async () => new Response("bad", { status: 400 }),
@@ -183,10 +207,11 @@ describe("Halo client", () => {
         expect((error as HaloApiError).status).toBe(500);
     });
 
-    it("lists agents as id/name pairs", async () => {
+    it("lists agents with working hours from full rows", async () => {
         const fetchImpl: FetchImpl = vi.fn(async () =>
             Response.json([
-                { id: 7, name: "Dana" },
+                { id: 7, name: "Dana", workhour_start: 9.5, workhour_end: 17 },
+                { id: 9, name: "Nina" },
                 { id: "x", name: "skipped" },
             ]),
         );
@@ -196,10 +221,14 @@ describe("Halo client", () => {
             authServer: "https://auth.halopsa.com",
             clientId: "client-1",
         });
-        await expect(client.getAgents("access-abc")).resolves.toEqual([{ id: 7, name: "Dana" }]);
+        await expect(client.getAgents("access-abc")).resolves.toEqual([
+            { id: 7, name: "Dana", workhourStart: 9.5, workhourEnd: 17 },
+            { id: 9, name: "Nina" },
+        ]);
         const [url] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
         expect(url).toContain("/api/agent?");
-        expect(url).toContain("basic_fields_only=true");
+        // Full rows: basic_fields_only would strip the workhour fields.
+        expect(url).not.toContain("basic_fields_only");
     });
 
     it("creates one appointment as a single-element array and returns its id", async () => {

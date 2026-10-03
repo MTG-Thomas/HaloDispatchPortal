@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import worker, { type BookingEnv } from "../entry";
 import { createBookingRequest, sealTokenPair, type HaloTokenPair } from "../kv";
 import { resetRateLimitsForTests } from "../ratelimit";
+import { createDispatcherSession, deleteDispatcherSession } from "../session";
 import { fakeKv } from "./fake-kv";
 
 beforeEach(() => {
@@ -23,7 +24,7 @@ async function seed(
     rid: string,
     pair: HaloTokenPair,
     ticketId: number,
-    overrides: { exp?: number; createdAt?: Date } = {},
+    overrides: { exp?: number; createdAt?: Date; sessionId?: string } = {},
 ): Promise<void> {
     const nowSec = Math.floor(Date.now() / 1000);
     await createBookingRequest(
@@ -35,6 +36,7 @@ async function seed(
             appointmentTypeId: 1,
             sealedTokens: await sealTokenPair(pair, SECRET),
             exp: overrides.exp ?? nowSec + 3600,
+            ...(overrides.sessionId !== undefined ? { sessionId: overrides.sessionId } : {}),
         },
         overrides.createdAt ?? new Date(),
     );
@@ -92,6 +94,54 @@ describe("dispatcher list endpoint", () => {
 
     it("returns an empty list for a dispatcher with no requests", async () => {
         const { status, json } = await list(env(), "nobody-access");
+        expect(status).toBe(200);
+        expect(json).toEqual({ requests: [] });
+    });
+
+    it("lists session-bound rows by session id, excluding other sessions", async () => {
+        const testEnv = env();
+        const mine = await createDispatcherSession(testEnv.BOOKING_REQUESTS, PAIR_A, SECRET);
+        const theirs = await createDispatcherSession(testEnv.BOOKING_REQUESTS, PAIR_B, SECRET);
+        await seed(testEnv, "rid-mine", PAIR_A, 42, { sessionId: mine.sessionId });
+        await seed(testEnv, "rid-theirs", PAIR_B, 43, { sessionId: theirs.sessionId });
+
+        const { status, json } = await list(testEnv, mine.sessionId);
+        expect(status).toBe(200);
+        const requests = json.requests as Record<string, unknown>[];
+        expect(requests.map((row) => row.rid)).toEqual(["rid-mine"]);
+        expect(JSON.stringify(json)).not.toContain("a-access");
+    });
+
+    it("lets a session id adopt pre-vault rows sealed with the same pair", async () => {
+        const testEnv = env();
+        const session = await createDispatcherSession(testEnv.BOOKING_REQUESTS, PAIR_A, SECRET);
+        await seed(testEnv, "rid-legacy", PAIR_A, 42);
+
+        const { json } = await list(testEnv, session.sessionId);
+        const requests = json.requests as Record<string, unknown>[];
+        expect(requests.map((row) => row.rid)).toEqual(["rid-legacy"]);
+    });
+
+    it("returns an empty list for a dead session id", async () => {
+        const testEnv = env();
+        await seed(testEnv, "rid-a1", PAIR_A, 42);
+        const { status, json } = await list(testEnv, "dead-session-id");
+        expect(status).toBe(200);
+        expect(json).toEqual({ requests: [] });
+    });
+
+    it("drops session-bound rows once the session is deleted", async () => {
+        const testEnv = env();
+        const session = await createDispatcherSession(testEnv.BOOKING_REQUESTS, PAIR_A, SECRET);
+        await seed(testEnv, "rid-mine", PAIR_A, 42, { sessionId: session.sessionId });
+
+        const before = await list(testEnv, session.sessionId);
+        expect((before.json.requests as Record<string, unknown>[]).map((row) => row.rid)).toEqual([
+            "rid-mine",
+        ]);
+
+        await deleteDispatcherSession(testEnv.BOOKING_REQUESTS, session.sessionId);
+        const { status, json } = await list(testEnv, session.sessionId);
         expect(status).toBe(200);
         expect(json).toEqual({ requests: [] });
     });

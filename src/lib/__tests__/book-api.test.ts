@@ -6,6 +6,8 @@ import {
     cancelBookingRequest,
     confirmBooking,
     decodeBookingTokenRid,
+    extendBookingRequest,
+    fetchBookingAudit,
     fetchBookingRequests,
     fetchBookingStatus,
     fetchBookSlots,
@@ -200,7 +202,7 @@ describe("confirmBooking", () => {
 });
 
 describe("dispatcher tracking", () => {
-    const ACCESS = "test-access-token";
+    const SESSION = "test-session-id";
 
     function summary(overrides: Partial<BookingRequestSummary> = {}): BookingRequestSummary {
         return {
@@ -214,6 +216,7 @@ describe("dispatcher tracking", () => {
             exp: 9_999_999_999,
             clickedAt: null,
             bookedAppointmentId: null,
+            viewCount: 0,
             ...overrides,
         };
     }
@@ -260,29 +263,29 @@ describe("dispatcher tracking", () => {
         it("GETs the list with the dispatcher header", async () => {
             const rows = [summary(), summary({ rid: "rid-2", ticketId: 43 })];
             const impl = mockFetchOnce(200, { requests: rows });
-            const result = await fetchBookingRequests(ACCESS);
+            const result = await fetchBookingRequests(SESSION);
             expect(result).toEqual(rows);
             const [url, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
             expect(url).toBe("/api/book/requests");
-            expect(authHeader(init)).toBe(`Bearer ${ACCESS}`);
+            expect(authHeader(init)).toBe(`Bearer ${SESSION}`);
         });
 
         it("skips malformed rows instead of failing", async () => {
             mockFetchOnce(200, { requests: [summary(), { nope: true }, null] });
-            const result = await fetchBookingRequests(ACCESS);
+            const result = await fetchBookingRequests(SESSION);
             expect(result).toEqual([summary()]);
         });
 
         it("rejects a non-list envelope", async () => {
             mockFetchOnce(200, { requests: "nope" });
-            await expect(fetchBookingRequests(ACCESS)).rejects.toMatchObject({
+            await expect(fetchBookingRequests(SESSION)).rejects.toMatchObject({
                 code: "network-error",
             });
         });
 
         it("maps 401 to unauthorized", async () => {
             mockFetchOnce(401, { error: "Unauthorized" });
-            await expect(fetchBookingRequests(ACCESS)).rejects.toMatchObject({
+            await expect(fetchBookingRequests(SESSION)).rejects.toMatchObject({
                 code: "unauthorized",
             });
         });
@@ -294,7 +297,7 @@ describe("dispatcher tracking", () => {
                     throw new TypeError("fetch failed");
                 }),
             );
-            await expect(fetchBookingRequests(ACCESS)).rejects.toMatchObject({
+            await expect(fetchBookingRequests(SESSION)).rejects.toMatchObject({
                 code: "network-error",
             });
         });
@@ -303,7 +306,7 @@ describe("dispatcher tracking", () => {
     describe("fetchBookingStatus", () => {
         it("GETs one request's status", async () => {
             const impl = mockFetchOnce(200, summary());
-            const result = await fetchBookingStatus("rid-1", ACCESS);
+            const result = await fetchBookingStatus("rid-1", SESSION);
             expect(result).toEqual(summary());
             const [url] = impl.mock.calls[0] as unknown as [string];
             expect(url).toBe("/api/book/requests/rid-1/status");
@@ -311,7 +314,7 @@ describe("dispatcher tracking", () => {
 
         it("maps 404 to not-found", async () => {
             mockFetchOnce(404, { error: "Booking request not found" });
-            await expect(fetchBookingStatus("rid-x", ACCESS)).rejects.toMatchObject({
+            await expect(fetchBookingStatus("rid-x", SESSION)).rejects.toMatchObject({
                 code: "not-found",
             });
         });
@@ -321,7 +324,7 @@ describe("dispatcher tracking", () => {
         it("POSTs the cancel and returns the terminal state", async () => {
             const terminal = summary({ status: "cancelled" });
             const impl = mockFetchOnce(200, terminal);
-            const result = await cancelBookingRequest("rid-1", ACCESS);
+            const result = await cancelBookingRequest("rid-1", SESSION);
             expect(result).toEqual(terminal);
             const [url, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
             expect(url).toBe("/api/book/requests/rid-1/cancel");
@@ -331,15 +334,181 @@ describe("dispatcher tracking", () => {
         it("carries the current state on 409", async () => {
             const terminal = summary({ status: "cancelled" });
             mockFetchOnce(409, { error: "Booking request is already final", ...terminal });
-            const error = await cancelBookingRequest("rid-1", ACCESS).catch((e: unknown) => e);
+            const error = await cancelBookingRequest("rid-1", SESSION).catch((e: unknown) => e);
             expect(error).toBeInstanceOf(BookingTrackerError);
             expect((error as BookingTrackerError).code).toBe("conflict");
             expect((error as BookingTrackerError).current).toEqual(terminal);
         });
     });
 
+    describe("viewCount parsing", () => {
+        it("passes server view counts through", async () => {
+            mockFetchOnce(200, summary({ viewCount: 4 }));
+            await expect(fetchBookingStatus("rid-1", SESSION)).resolves.toMatchObject({
+                viewCount: 4,
+            });
+        });
+
+        it("defaults a missing or invalid viewCount to 0", async () => {
+            const legacy = summary();
+            delete (legacy as Partial<BookingRequestSummary>).viewCount;
+            mockFetchOnce(200, legacy);
+            await expect(fetchBookingStatus("rid-1", SESSION)).resolves.toMatchObject({
+                viewCount: 0,
+            });
+            mockFetchOnce(200, { ...summary(), viewCount: "many" });
+            await expect(fetchBookingStatus("rid-1", SESSION)).resolves.toMatchObject({
+                viewCount: 0,
+            });
+        });
+    });
+
+    describe("extendBookingRequest", () => {
+        const renewed = {
+            rid: "rid-1",
+            token: "tok-renewed",
+            expiresAt: "2026-10-20T00:00:00.000Z",
+        };
+
+        it("POSTs the extend with days and returns the resealed link", async () => {
+            const impl = mockFetchOnce(200, renewed);
+            const result = await extendBookingRequest({
+                rid: "rid-1",
+                sessionId: SESSION,
+                days: 14,
+            });
+            expect(result).toEqual(renewed);
+            const [url, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
+            expect(url).toBe("/api/book/requests/rid-1/extend");
+            expect(init.method).toBe("POST");
+            expect(JSON.parse(init.body as string)).toEqual({ days: 14 });
+            expect(authHeader(init)).toBe(`Bearer ${SESSION}`);
+        });
+
+        it("sends an empty body when days is omitted", async () => {
+            const impl = mockFetchOnce(200, renewed);
+            await extendBookingRequest({ rid: "rid-1", sessionId: SESSION });
+            const [, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
+            expect(JSON.parse(init.body as string)).toEqual({});
+        });
+
+        it("carries the current state on 409", async () => {
+            const terminal = summary({ status: "expired" });
+            mockFetchOnce(409, { error: "Booking request is already final", ...terminal });
+            const error = await extendBookingRequest({
+                rid: "rid-1",
+                sessionId: SESSION,
+            }).catch((e: unknown) => e);
+            expect(error).toBeInstanceOf(BookingTrackerError);
+            expect((error as BookingTrackerError).code).toBe("conflict");
+            expect((error as BookingTrackerError).current).toEqual(terminal);
+        });
+
+        it("maps 401, 404, and 400", async () => {
+            mockFetchOnce(401, { error: "Unauthorized" });
+            await expect(
+                extendBookingRequest({ rid: "rid-1", sessionId: "stale" }),
+            ).rejects.toMatchObject({ code: "unauthorized" });
+            mockFetchOnce(404, { error: "Booking request not found" });
+            await expect(
+                extendBookingRequest({ rid: "rid-x", sessionId: SESSION }),
+            ).rejects.toMatchObject({ code: "not-found" });
+            mockFetchOnce(400, { error: "Invalid extend request" });
+            const error = await extendBookingRequest({
+                rid: "rid-1",
+                sessionId: SESSION,
+                days: 99,
+            }).catch((e: unknown) => e);
+            expect(error).toBeInstanceOf(BookingTrackerError);
+            expect((error as BookingTrackerError).code).toBe("invalid-request");
+        });
+
+        it("rejects malformed success bodies", async () => {
+            mockFetchOnce(200, { rid: "rid-1" });
+            await expect(
+                extendBookingRequest({ rid: "rid-1", sessionId: SESSION }),
+            ).rejects.toMatchObject({ code: "network-error" });
+        });
+    });
+
+    describe("fetchBookingAudit", () => {
+        const trail = {
+            rid: "rid-1",
+            viewCount: 2,
+            events: [
+                { type: "view", at: "2026-10-03T10:00:00.000Z" },
+                { type: "view", at: "2026-10-03T11:00:00.000Z" },
+                {
+                    type: "extend",
+                    at: "2026-10-03T12:00:00.000Z",
+                    detail: "2026-10-20T00:00:00.000Z",
+                },
+            ],
+        };
+
+        it("GETs one request's audit trail", async () => {
+            const impl = mockFetchOnce(200, trail);
+            const result = await fetchBookingAudit("rid-1", SESSION);
+            expect(result).toEqual({
+                rid: "rid-1",
+                viewCount: 2,
+                events: [
+                    { type: "view", at: "2026-10-03T10:00:00.000Z", detail: null },
+                    { type: "view", at: "2026-10-03T11:00:00.000Z", detail: null },
+                    {
+                        type: "extend",
+                        at: "2026-10-03T12:00:00.000Z",
+                        detail: "2026-10-20T00:00:00.000Z",
+                    },
+                ],
+            });
+            const [url] = impl.mock.calls[0] as unknown as [string];
+            expect(url).toBe("/api/book/requests/rid-1/audit");
+        });
+
+        it("drops malformed events instead of failing", async () => {
+            mockFetchOnce(200, {
+                rid: "rid-1",
+                viewCount: 1,
+                events: [{ type: "view", at: "2026-10-03T10:00:00.000Z" }, null, { nope: true }],
+            });
+            const result = await fetchBookingAudit("rid-1", SESSION);
+            expect(result.events).toEqual([
+                { type: "view", at: "2026-10-03T10:00:00.000Z", detail: null },
+            ]);
+        });
+
+        it("counts views when the server omits the count", async () => {
+            mockFetchOnce(200, {
+                rid: "rid-1",
+                events: [
+                    { type: "view", at: "2026-10-03T10:00:00.000Z" },
+                    { type: "cancel", at: "2026-10-03T11:00:00.000Z" },
+                ],
+            });
+            await expect(fetchBookingAudit("rid-1", SESSION)).resolves.toMatchObject({
+                viewCount: 1,
+            });
+        });
+
+        it("rejects a non-trail envelope and maps 401/404", async () => {
+            mockFetchOnce(200, { events: "nope" });
+            await expect(fetchBookingAudit("rid-1", SESSION)).rejects.toMatchObject({
+                code: "network-error",
+            });
+            mockFetchOnce(401, { error: "Unauthorized" });
+            await expect(fetchBookingAudit("rid-1", SESSION)).rejects.toMatchObject({
+                code: "unauthorized",
+            });
+            mockFetchOnce(404, { error: "Booking request not found" });
+            await expect(fetchBookingAudit("rid-x", SESSION)).rejects.toMatchObject({
+                code: "not-found",
+            });
+        });
+    });
+
     describe("mintBookingRequest", () => {
-        const pair = { access_token: "a", refresh_token: "r" };
+        const MINT_SESSION = "mint-session-id";
 
         it("POSTs the mint body and returns the link", async () => {
             const impl = mockFetchOnce(201, {
@@ -351,7 +520,7 @@ describe("dispatcher tracking", () => {
                 ticketId: 42,
                 agentIds: [7],
                 appointmentTypeId: 3,
-                haloTokenPair: pair,
+                sessionId: MINT_SESSION,
             });
             expect(result).toEqual({
                 rid: "rid-9",
@@ -364,7 +533,7 @@ describe("dispatcher tracking", () => {
                 ticketId: 42,
                 agentIds: [7],
                 appointmentTypeId: 3,
-                haloTokenPair: pair,
+                sessionId: MINT_SESSION,
                 // Matches the client's -0 normalization on UTC machines.
                 dispatcherUtcOffset: -new Date().getTimezoneOffset() || 0,
             });
@@ -380,7 +549,7 @@ describe("dispatcher tracking", () => {
                 ticketId: 42,
                 agentIds: [7],
                 appointmentTypeId: 3,
-                haloTokenPair: pair,
+                sessionId: MINT_SESSION,
                 dispatcherUtcOffset: -300,
             });
             const [, init] = impl.mock.calls[0] as unknown as [string, RequestInit];
@@ -395,7 +564,7 @@ describe("dispatcher tracking", () => {
                 ticketId: 0,
                 agentIds: [],
                 appointmentTypeId: 0,
-                haloTokenPair: pair,
+                sessionId: MINT_SESSION,
             }).catch((e: unknown) => e);
             expect(error).toBeInstanceOf(BookingTrackerError);
             expect((error as BookingTrackerError).code).toBe("invalid-request");
@@ -404,7 +573,6 @@ describe("dispatcher tracking", () => {
     });
 
     describe("resendBookingRequest", () => {
-        const pair = { access_token: "a", refresh_token: "r" };
         const fresh = { rid: "rid-new", token: "tok-new", expiresAt: "2026-10-10T00:00:00.000Z" };
 
         function mockSequence(first: Response, second?: Response | Error) {
@@ -426,24 +594,26 @@ describe("dispatcher tracking", () => {
             );
             const result = await resendBookingRequest({
                 previous: summary(),
-                haloTokenPair: pair,
-                accessToken: ACCESS,
+                sessionId: SESSION,
             });
             expect(result).toEqual({ ...fresh, oldInvalidated: true });
             expect(impl).toHaveBeenCalledTimes(2);
             const [mintUrl, mintInit] = impl.mock.calls[0] as unknown as [string, RequestInit];
             expect(mintUrl).toBe("/api/book/requests");
-            expect(JSON.parse(mintInit.body as string)).toMatchObject({ ticketId: 42 });
-            const [cancelUrl] = impl.mock.calls[1] as unknown as [string];
+            expect(JSON.parse(mintInit.body as string)).toMatchObject({
+                ticketId: 42,
+                sessionId: SESSION,
+            });
+            const [cancelUrl, cancelInit] = impl.mock.calls[1] as unknown as [string, RequestInit];
             expect(cancelUrl).toBe("/api/book/requests/rid-1/cancel");
+            expect(authHeader(cancelInit)).toBe(`Bearer ${SESSION}`);
         });
 
         it("skips the cancel for terminal predecessors", async () => {
             const impl = mockSequence(new Response(JSON.stringify(fresh), { status: 201 }));
             const result = await resendBookingRequest({
                 previous: summary({ status: "expired" }),
-                haloTokenPair: pair,
-                accessToken: ACCESS,
+                sessionId: SESSION,
             });
             expect(result).toEqual({ ...fresh, oldInvalidated: true });
             expect(impl).toHaveBeenCalledTimes(1);
@@ -461,8 +631,7 @@ describe("dispatcher tracking", () => {
             );
             const result = await resendBookingRequest({
                 previous: summary(),
-                haloTokenPair: pair,
-                accessToken: ACCESS,
+                sessionId: SESSION,
             });
             expect(result.oldInvalidated).toBe(true);
         });
@@ -474,8 +643,7 @@ describe("dispatcher tracking", () => {
             );
             const result = await resendBookingRequest({
                 previous: summary(),
-                haloTokenPair: pair,
-                accessToken: ACCESS,
+                sessionId: SESSION,
             });
             expect(result).toEqual({ ...fresh, oldInvalidated: false });
         });

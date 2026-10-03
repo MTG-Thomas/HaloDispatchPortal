@@ -54,11 +54,25 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         const checkAuth = async () => {
             let authenticated = authService.isAuthenticated();
 
+            // Post-reload: memory tokens are gone but the vault session id
+            // persists — restore access credentials before deciding auth
+            // state.
+            if (!authenticated && authService.hasDispatcherSession()) {
+                const restored = await authService.restoreDispatcherSession();
+                if (cancelled) return;
+                if (restored) {
+                    authenticated = authService.isAuthenticated();
+                }
+            }
+
+            // A stale-but-restorable session gets one refresh attempt: via
+            // Worker rotation when vaulted, or a direct grant when memory
+            // still carries a refresh token (no-vault mode).
             if (
                 !authenticated &&
                 config.authServer &&
                 config.clientId &&
-                authService.loadTokens()?.refresh_token
+                (authService.loadTokens()?.refresh_token || authService.hasDispatcherSession())
             ) {
                 const refreshed = await authService.ensureFreshToken({
                     authServer: config.authServer,

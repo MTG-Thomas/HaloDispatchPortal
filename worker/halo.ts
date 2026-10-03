@@ -15,8 +15,12 @@ export type FetchImpl = (input: string | URL | Request, init?: RequestInit) => P
 
 export interface HaloClientOptions {
     fetchImpl: FetchImpl;
-    /** Halo resource server origin, e.g. `https://tenant.halopsa.com`. */
-    resourceServer: string;
+    /**
+     * Halo resource server origin, e.g. `https://tenant.halopsa.com`.
+     * Optional only for rotation-only clients (session refresh needs just
+     * the token endpoint); resource methods throw when it is absent.
+     */
+    resourceServer?: string;
     /** Halo auth server origin (token endpoint host). */
     authServer: string;
     clientId: string;
@@ -70,6 +74,14 @@ export interface WorkerAppointment {
 export interface WorkerAgent {
     id: number;
     name: string;
+    /**
+     * Fractional working-day bounds from the full agent row
+     * (`workhour_start` / `workhour_end`, e.g. 9.5 = 09:30). Same fields as
+     * `HaloAgent` in `src/types/halo.ts`; absent when Halo omits them, in
+     * which case the slot engine falls back to the 09:00-17:00 defaults.
+     */
+    workhourStart?: number;
+    workhourEnd?: number;
 }
 
 function stripTrailingSlash(origin: string): string {
@@ -117,19 +129,35 @@ function toWorkerAgents(body: unknown): WorkerAgent[] {
         if (typeof row.id !== "number" || typeof row.name !== "string") {
             continue;
         }
-        out.push({ id: row.id, name: row.name });
+        const agent: WorkerAgent = { id: row.id, name: row.name };
+        if (typeof row.workhour_start === "number") {
+            agent.workhourStart = row.workhour_start;
+        }
+        if (typeof row.workhour_end === "number") {
+            agent.workhourEnd = row.workhour_end;
+        }
+        out.push(agent);
     }
     return out;
 }
 
 export function createHaloClient(options: HaloClientOptions): HaloClient {
-    const resourceServer = stripTrailingSlash(options.resourceServer);
+    const resourceServer = options.resourceServer
+        ? stripTrailingSlash(options.resourceServer)
+        : null;
     const authServer = stripTrailingSlash(options.authServer);
     const { fetchImpl, clientId } = options;
+    const requireResourceServer = (): string => {
+        if (!resourceServer) {
+            throw new HaloApiError(500, "Halo resource server not configured");
+        }
+        return resourceServer;
+    };
 
     return {
         async getTicket(accessToken: string, ticketId: number): Promise<unknown> {
-            const response = await fetchImpl(`${resourceServer}/api/Tickets/${ticketId}`, {
+            const base = requireResourceServer();
+            const response = await fetchImpl(`${base}/api/Tickets/${ticketId}`, {
                 headers: { Authorization: `Bearer ${accessToken}` },
             });
             if (!response.ok) {
@@ -191,9 +219,12 @@ export function createHaloClient(options: HaloClientOptions): HaloClient {
                 excluderecurringmaster: "true",
                 showshifts: "false",
             });
-            const response = await fetchImpl(`${resourceServer}/api/Appointment?${params}`, {
-                headers: { Authorization: `Bearer ${accessToken}` },
-            });
+            const response = await fetchImpl(
+                `${requireResourceServer()}/api/Appointment?${params}`,
+                {
+                    headers: { Authorization: `Bearer ${accessToken}` },
+                },
+            );
             if (!response.ok) {
                 throw new HaloApiError(
                     response.status,
@@ -204,12 +235,14 @@ export function createHaloClient(options: HaloClientOptions): HaloClient {
         },
 
         async getAgents(accessToken): Promise<WorkerAgent[]> {
-            // Same flags as the SPA getAgents defaults.
+            // Full agent rows (no `basic_fields_only`): the slot engine
+            // needs `workhour_start`/`workhour_end` for per-agent working
+            // hours. Same `/api/agent` endpoint the SPA uses (see
+            // `getAgents` in src/services/halo-api.ts).
             const params = new URLSearchParams({
                 reassign: "true",
-                basic_fields_only: "true",
             });
-            const response = await fetchImpl(`${resourceServer}/api/agent?${params}`, {
+            const response = await fetchImpl(`${requireResourceServer()}/api/agent?${params}`, {
                 headers: { Authorization: `Bearer ${accessToken}` },
             });
             if (!response.ok) {
@@ -222,7 +255,7 @@ export function createHaloClient(options: HaloClientOptions): HaloClient {
         },
 
         async createAppointment(accessToken, payload): Promise<number> {
-            const response = await fetchImpl(`${resourceServer}/api/appointment`, {
+            const response = await fetchImpl(`${requireResourceServer()}/api/appointment`, {
                 method: "POST",
                 headers: {
                     Authorization: `Bearer ${accessToken}`,

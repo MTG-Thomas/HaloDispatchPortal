@@ -197,15 +197,19 @@ function trackSummary(overrides: Record<string, unknown> = {}) {
 /** Seed an authenticated, configured session without touching a live Halo. */
 async function seedAuthedSession(page: Page) {
     await page.addInitScript(
-        ({ tokens, config, selection }) => {
+        ({ tokens, config, selection, session }) => {
             localStorage.setItem("halo-dispatch-tokens", JSON.stringify(tokens));
             localStorage.setItem("halo-dispatch-config", JSON.stringify(config));
             localStorage.setItem("halo-dispatch-selection", JSON.stringify(selection));
+            // Vault session id: dispatcher tracking authenticates with this
+            // (the Worker tracking endpoints are route-mocked below).
+            localStorage.setItem("halo-dispatch-session", JSON.stringify(session));
         },
         {
             tokens: freshTokens(),
             config: configState(),
             selection: selectionState(),
+            session: { sessionId: "e2e-session-id", expiresAt: "2027-01-01T00:00:00.000Z" },
         },
     );
 }

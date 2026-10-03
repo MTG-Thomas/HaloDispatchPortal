@@ -1,10 +1,26 @@
-import { useMemo } from "react";
+import { Fragment, useCallback, useMemo, useState } from "react";
 import { formatDistanceToNow } from "date-fns";
-import { Inbox, Loader2, RefreshCw, Send, X } from "lucide-react";
+import {
+    CalendarClock,
+    ChevronDown,
+    ChevronRight,
+    Inbox,
+    Loader2,
+    RefreshCw,
+    Send,
+    X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { BookingStatusChip } from "@/components/booking/BookingStatusChip";
+import { SendBookingLinkMenu } from "@/components/booking/SendBookingLinkMenu";
 import { useBookingRequests, type BookingTracker } from "@/hooks/useBookingRequests";
-import { isBookingOpen, type BookingRequestSummary } from "@/lib/book-api";
+import {
+    isBookingOpen,
+    type BookingAuditEvent,
+    type BookingAuditTrail,
+    type BookingRequestSummary,
+} from "@/lib/book-api";
+import { sendBookingLink, type BookingSendChannel } from "@/lib/send-booking-link";
 import { useDispatchStore } from "@/stores/useDispatchStore";
 import { useConfigStore } from "@/stores/configStore";
 import { toast } from "sonner";
@@ -26,6 +42,26 @@ function requestAge(createdAt: string): string {
     return formatDistanceToNow(date, { addSuffix: true });
 }
 
+const AUDIT_LABELS: Record<BookingAuditEvent["type"], string> = {
+    view: "Viewed",
+    book: "Booked",
+    cancel: "Cancelled",
+    extend: "Extended",
+};
+
+function auditDetail(event: BookingAuditEvent): string | null {
+    if (!event.detail) {
+        return null;
+    }
+    if (event.type === "book") {
+        return `appointment #${event.detail}`;
+    }
+    if (event.type === "extend") {
+        return `new expiry ${event.detail}`;
+    }
+    return event.detail;
+}
+
 /**
  * Outstanding booking requests: every link the signed-in dispatcher minted,
  * open requests first. Terminal rows are actionless except resend-as-new on
@@ -39,6 +75,10 @@ export function OutstandingRequests({ tracker }: { tracker?: BookingTracker } = 
     const booking = tracker ?? fallback;
     const { agents } = useDispatchStore();
     const { config } = useConfigStore();
+    const [expandedRid, setExpandedRid] = useState<string | null>(null);
+    const [audits, setAudits] = useState<Record<string, BookingAuditTrail>>({});
+    const [auditLoadingRid, setAuditLoadingRid] = useState<string | null>(null);
+    const [auditErrorRid, setAuditErrorRid] = useState<string | null>(null);
 
     const rows = useMemo(() => {
         const open: BookingRequestSummary[] = [];
@@ -73,6 +113,65 @@ export function OutstandingRequests({ tracker }: { tracker?: BookingTracker } = 
             toast.error("Failed to cancel booking request.");
         }
     };
+
+    const onSend = async (summary: BookingRequestSummary, channel: BookingSendChannel) => {
+        try {
+            const { oldInvalidated, copied } = await sendBookingLink({
+                ticketId: summary.ticketId,
+                channel,
+                origin: window.location.origin,
+                mintFresh: () => booking.resend(summary),
+                open: (href) => {
+                    window.location.href = href;
+                },
+                copyFallback: (url) => navigator.clipboard.writeText(url),
+            });
+            toast.success(
+                channel === "sms"
+                    ? `Opening text message with booking link…${copied ? " Link also copied." : ""}`
+                    : `Opening email with booking link…${copied ? " Link also copied." : ""}`,
+            );
+            if (!oldInvalidated) {
+                toast.warning("The old link is still live — cancel it from this queue.");
+            }
+        } catch {
+            toast.error("Failed to send booking link.");
+        }
+    };
+
+    const onExtend = async (summary: BookingRequestSummary) => {
+        try {
+            const { token } = await booking.extend(summary.rid);
+            await navigator.clipboard.writeText(`${window.location.origin}/book/${token}`);
+            toast.success("Renewed booking link copied to clipboard.");
+        } catch {
+            toast.error("Failed to extend booking link.");
+        }
+    };
+
+    const onToggleAudit = useCallback(
+        async (summary: BookingRequestSummary) => {
+            if (expandedRid === summary.rid) {
+                setExpandedRid(null);
+                return;
+            }
+            setExpandedRid(summary.rid);
+            setAuditErrorRid(null);
+            if (audits[summary.rid]) {
+                return;
+            }
+            setAuditLoadingRid(summary.rid);
+            try {
+                const trail = await booking.fetchAudit(summary.rid);
+                setAudits((cached) => ({ ...cached, [summary.rid]: trail }));
+            } catch {
+                setAuditErrorRid(summary.rid);
+            } finally {
+                setAuditLoadingRid(null);
+            }
+        },
+        [audits, booking, expandedRid],
+    );
 
     if (booking.loading) {
         return (
@@ -133,6 +232,7 @@ export function OutstandingRequests({ tracker }: { tracker?: BookingTracker } = 
                             <th className="px-3 py-2 text-left font-medium text-xs">Ticket</th>
                             <th className="px-3 py-2 text-left font-medium text-xs">Agent</th>
                             <th className="px-3 py-2 text-left font-medium text-xs">Age</th>
+                            <th className="px-3 py-2 text-left font-medium text-xs">Views</th>
                             <th className="px-3 py-2 text-left font-medium text-xs">Status</th>
                             <th className="px-3 py-2 text-right font-medium text-xs">Actions</th>
                         </tr>
@@ -142,73 +242,186 @@ export function OutstandingRequests({ tracker }: { tracker?: BookingTracker } = 
                             const open = isBookingOpen(row);
                             const resendable = open || row.status === "expired";
                             const busy = booking.busyRid === row.rid;
+                            const expanded = expandedRid === row.rid;
+                            const trail = audits[row.rid];
                             return (
-                                <tr
-                                    key={row.rid}
-                                    className="border-b last:border-0 hover:bg-muted/30 transition-colors"
-                                >
-                                    <td className="px-3 py-2 whitespace-nowrap">
-                                        {config.resourceServer ? (
-                                            <a
-                                                href={`${config.resourceServer}/tickets?id=${row.ticketId}`}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                className="text-primary hover:underline font-medium"
-                                            >
-                                                #{row.ticketId}
-                                            </a>
-                                        ) : (
-                                            <span className="font-medium">#{row.ticketId}</span>
-                                        )}
-                                    </td>
-                                    <td className="px-3 py-2 text-xs max-w-40 truncate">
-                                        {agentLabel(row, resolveName)}
-                                    </td>
-                                    <td
-                                        className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap"
-                                        title={row.createdAt}
-                                    >
-                                        {requestAge(row.createdAt)}
-                                    </td>
-                                    <td className="px-3 py-2 whitespace-nowrap">
-                                        <BookingStatusChip
-                                            summary={row}
-                                            testId={`booking-queue-status-${row.ticketId}`}
-                                        />
-                                    </td>
-                                    <td className="px-3 py-2 text-right whitespace-nowrap">
-                                        {open || resendable ? (
-                                            <div className="flex items-center justify-end gap-1">
-                                                {resendable && (
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="icon"
-                                                        onClick={() => void onResend(row)}
-                                                        disabled={busy}
-                                                        title="Resend booking link (invalidates the old one)"
-                                                        aria-label={`Resend booking link for ticket ${row.ticketId}`}
+                                <Fragment key={row.rid}>
+                                    <tr className="border-b last:border-0 hover:bg-muted/30 transition-colors">
+                                        <td className="px-3 py-2 whitespace-nowrap">
+                                            <span className="inline-flex items-center gap-1">
+                                                <Button
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    className="h-6 w-6"
+                                                    onClick={() => void onToggleAudit(row)}
+                                                    title={
+                                                        expanded
+                                                            ? "Hide link activity"
+                                                            : "Show link activity"
+                                                    }
+                                                    aria-label={`Show link activity for ticket ${row.ticketId}`}
+                                                    aria-expanded={expanded}
+                                                >
+                                                    {expanded ? (
+                                                        <ChevronDown
+                                                            className="h-4 w-4"
+                                                            aria-hidden
+                                                        />
+                                                    ) : (
+                                                        <ChevronRight
+                                                            className="h-4 w-4"
+                                                            aria-hidden
+                                                        />
+                                                    )}
+                                                </Button>
+                                                {config.resourceServer ? (
+                                                    <a
+                                                        href={`${config.resourceServer}/tickets?id=${row.ticketId}`}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="text-primary hover:underline font-medium"
                                                     >
-                                                        <Send className="h-4 w-4" aria-hidden />
-                                                    </Button>
+                                                        #{row.ticketId}
+                                                    </a>
+                                                ) : (
+                                                    <span className="font-medium">
+                                                        #{row.ticketId}
+                                                    </span>
                                                 )}
-                                                {open && (
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="icon"
-                                                        onClick={() => void onCancel(row)}
-                                                        disabled={busy}
-                                                        title="Cancel booking request"
-                                                        aria-label={`Cancel booking request for ticket ${row.ticketId}`}
-                                                    >
-                                                        <X className="h-4 w-4" aria-hidden />
-                                                    </Button>
+                                            </span>
+                                        </td>
+                                        <td className="px-3 py-2 text-xs max-w-40 truncate">
+                                            {agentLabel(row, resolveName)}
+                                        </td>
+                                        <td
+                                            className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap"
+                                            title={row.createdAt}
+                                        >
+                                            {requestAge(row.createdAt)}
+                                        </td>
+                                        <td
+                                            className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap"
+                                            title={`${row.viewCount} validated customer views`}
+                                        >
+                                            {row.viewCount}
+                                        </td>
+                                        <td className="px-3 py-2 whitespace-nowrap">
+                                            <BookingStatusChip
+                                                summary={row}
+                                                testId={`booking-queue-status-${row.ticketId}`}
+                                            />
+                                        </td>
+                                        <td className="px-3 py-2 text-right whitespace-nowrap">
+                                            {open || resendable ? (
+                                                <div className="flex items-center justify-end gap-1">
+                                                    {resendable && (
+                                                        <SendBookingLinkMenu
+                                                            ticketId={row.ticketId}
+                                                            disabled={busy}
+                                                            onSelect={(channel) =>
+                                                                void onSend(row, channel)
+                                                            }
+                                                        />
+                                                    )}
+                                                    {resendable && (
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            onClick={() => void onResend(row)}
+                                                            disabled={busy}
+                                                            title="Resend booking link (invalidates the old one)"
+                                                            aria-label={`Resend booking link for ticket ${row.ticketId}`}
+                                                        >
+                                                            <Send className="h-4 w-4" aria-hidden />
+                                                        </Button>
+                                                    )}
+                                                    {open && (
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            onClick={() => void onExtend(row)}
+                                                            disabled={busy}
+                                                            title="Extend link expiry (copies the renewed link)"
+                                                            aria-label={`Extend booking link for ticket ${row.ticketId}`}
+                                                        >
+                                                            <CalendarClock
+                                                                className="h-4 w-4"
+                                                                aria-hidden
+                                                            />
+                                                        </Button>
+                                                    )}
+                                                    {open && (
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            onClick={() => void onCancel(row)}
+                                                            disabled={busy}
+                                                            title="Cancel booking request"
+                                                            aria-label={`Cancel booking request for ticket ${row.ticketId}`}
+                                                        >
+                                                            <X className="h-4 w-4" aria-hidden />
+                                                        </Button>
+                                                    )}
+                                                </div>
+                                            ) : (
+                                                <span className="text-xs text-muted-foreground">
+                                                    —
+                                                </span>
+                                            )}
+                                        </td>
+                                    </tr>
+                                    {expanded && (
+                                        <tr className="border-b last:border-0 bg-muted/20">
+                                            <td colSpan={6} className="px-3 py-2">
+                                                {auditLoadingRid === row.rid ? (
+                                                    <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                                                        <Loader2
+                                                            className="h-3 w-3 animate-spin"
+                                                            aria-hidden
+                                                        />
+                                                        Loading link activity…
+                                                    </p>
+                                                ) : auditErrorRid === row.rid ? (
+                                                    <p className="text-xs text-muted-foreground">
+                                                        Could not load link activity.
+                                                    </p>
+                                                ) : trail && trail.events.length > 0 ? (
+                                                    <ul className="flex flex-col gap-1">
+                                                        {trail.events.map((event, index) => {
+                                                            const detail = auditDetail(event);
+                                                            return (
+                                                                <li
+                                                                    // The trail is append-only; the index is stable.
+                                                                    key={`${event.at}-${index}`}
+                                                                    className="flex items-baseline gap-2 text-xs"
+                                                                >
+                                                                    <span className="font-medium">
+                                                                        {AUDIT_LABELS[event.type]}
+                                                                    </span>
+                                                                    <span
+                                                                        className="text-muted-foreground"
+                                                                        title={event.at}
+                                                                    >
+                                                                        {requestAge(event.at)}
+                                                                    </span>
+                                                                    {detail && (
+                                                                        <span className="text-muted-foreground">
+                                                                            {detail}
+                                                                        </span>
+                                                                    )}
+                                                                </li>
+                                                            );
+                                                        })}
+                                                    </ul>
+                                                ) : (
+                                                    <p className="text-xs text-muted-foreground">
+                                                        No link activity yet.
+                                                    </p>
                                                 )}
-                                            </div>
-                                        ) : (
-                                            <span className="text-xs text-muted-foreground">—</span>
-                                        )}
-                                    </td>
-                                </tr>
+                                            </td>
+                                        </tr>
+                                    )}
+                                </Fragment>
                             );
                         })}
                     </tbody>
