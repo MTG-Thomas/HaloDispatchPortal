@@ -1,5 +1,5 @@
 import type { Ticket, EnrichedTicket, ClientCache } from "@/types/halo";
-import { formatDistanceToNow } from "date-fns";
+import { formatDistance } from "date-fns";
 
 /**
  * Check if a date is the sentinel "null" date used by Halo PSA
@@ -36,7 +36,7 @@ export function computeSla(
         if (fixBy.getTime() < now.getTime()) {
             // Overdue
             return {
-                slaTimeLeft: `Overdue ${formatDistanceToNow(fixBy, { addSuffix: true })}`,
+                slaTimeLeft: `Overdue ${formatDistance(fixBy, now, { addSuffix: true })}`,
                 slaState: "overdue",
             };
         }
@@ -46,7 +46,7 @@ export function computeSla(
         const hoursLeft = msLeft / (1000 * 60 * 60);
 
         return {
-            slaTimeLeft: formatDistanceToNow(fixBy, { addSuffix: true }),
+            slaTimeLeft: formatDistance(fixBy, now, { addSuffix: true }),
             slaState: hoursLeft < 2 ? "warning" : "ok",
         };
     }

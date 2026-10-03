@@ -25,12 +25,10 @@ export interface ReferenceSlice {
     getVisibleAgents: () => Agent[];
 }
 
-export const createReferenceSlice: StateCreator<
-    DispatchState,
-    [],
-    [],
-    ReferenceSlice
-> = (set, get) => ({
+export const createReferenceSlice: StateCreator<DispatchState, [], [], ReferenceSlice> = (
+    set,
+    get,
+) => ({
     agents: [],
     teams: [],
     clientCache: null,
@@ -104,9 +102,7 @@ export const createReferenceSlice: StateCreator<
                 return {
                     id: teamId,
                     name: haloTeam.name,
-                    memberIds: Array.from(
-                        teamMemberMap.get(haloTeam.name) || []
-                    ),
+                    memberIds: Array.from(teamMemberMap.get(haloTeam.name) || []),
                     color: teamColourForSequence(haloTeam.sequence),
                     isActive: !haloTeam.inactive,
                     sequence: haloTeam.sequence,
@@ -124,8 +120,7 @@ export const createReferenceSlice: StateCreator<
         });
 
         // Auto-select all agents if no agents are currently selected
-        const { selectedResources, setSelectedResources } =
-            usePreferencesStore.getState();
+        const { selectedResources, setSelectedResources } = usePreferencesStore.getState();
         if (selectedResources.length === 0 && agents.length > 0) {
             const allAgentSelections = agents.map((agent) => ({
                 type: "agent" as const,
@@ -151,7 +146,7 @@ export const createReferenceSlice: StateCreator<
             if (!cache || !cache.agents || !Array.isArray(cache.agents)) {
                 logger.error(
                     "Invalid ClientCache response (no agents - token likely expired):",
-                    cache
+                    cache,
                 );
 
                 // Token is likely expired/invalid. Try to refresh it.
@@ -167,14 +162,10 @@ export const createReferenceSlice: StateCreator<
                     // Retry loading ClientCache with new token
                     const retryCache = await getClientCache();
 
-                    if (
-                        !retryCache ||
-                        !retryCache.agents ||
-                        !Array.isArray(retryCache.agents)
-                    ) {
+                    if (!retryCache || !retryCache.agents || !Array.isArray(retryCache.agents)) {
                         // Still no agents after refresh - clear tokens and force re-login
                         logger.error(
-                            "ClientCache still invalid after token refresh, forcing re-login"
+                            "ClientCache still invalid after token refresh, forcing re-login",
                         );
                         logout();
                         return;
@@ -194,13 +185,15 @@ export const createReferenceSlice: StateCreator<
             await get().loadClientCacheInternal(cache);
         } catch (error) {
             logger.error("Failed to load client cache:", error);
+            const message = error instanceof Error ? error.message : "Failed to load client cache";
             set({
-                clientCacheError:
-                    error instanceof Error
-                        ? error.message
-                        : "Failed to load client cache",
+                clientCacheError: message,
                 clientCacheLoading: false,
             });
+            // Initial cache load is app-blocking: without it DispatchView
+            // would spin forever, so surface the blocking overlay (with
+            // manual retry) instead of failing silently.
+            get().setCriticalApiError(message);
         }
     },
 
@@ -221,9 +214,7 @@ export const createReferenceSlice: StateCreator<
             } else if (resource.type === "team") {
                 const team = state.teams.find((t) => t.id === resource.id);
                 if (team) {
-                    team.memberIds.forEach((agentId) =>
-                        selectedAgentIds.add(agentId)
-                    );
+                    team.memberIds.forEach((agentId) => selectedAgentIds.add(agentId));
                 }
             }
         });

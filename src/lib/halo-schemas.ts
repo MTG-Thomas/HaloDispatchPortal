@@ -8,8 +8,9 @@ import { logger } from "./logger";
  * Tenant field availability varies (see AGENTS.md), so item schemas require
  * only the core fields the app reads and use `.passthrough()` for the rest.
  * Envelope schemas require the arrays/counts the app iterates over.
- * Unknown or malformed items are dropped (with a dev log), never fatal;
- * a malformed envelope throws an ApiError with a safe message.
+ * A malformed item fails the whole response (safeParse rejects the
+ * envelope, with a dev log naming the first issue); a malformed envelope
+ * throws an ApiError with a safe message. Nothing is silently dropped.
  */
 
 const HaloAgentSchema = z

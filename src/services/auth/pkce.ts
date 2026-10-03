@@ -10,8 +10,7 @@ const PKCE_VERIFIER_KEY = "halo-dispatch-pkce-verifier";
 const OAUTH_STATE_KEY = "halo-dispatch-oauth-state";
 
 const VERIFIER_LENGTH = 64;
-const VERIFIER_CHARSET =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+const VERIFIER_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
 
 export interface PkceRequest {
     state: string;
@@ -20,13 +19,21 @@ export interface PkceRequest {
 
 /**
  * Generate a `code_verifier`: 64 chars from the RFC 7636 unreserved set.
+ * Rejection sampling avoids the modulo bias of `byte % charset.length`
+ * (256 is not a multiple of the 66-char set).
  */
 export function generateCodeVerifier(): string {
-    const random = new Uint8Array(VERIFIER_LENGTH);
-    crypto.getRandomValues(random);
+    const maxUsable = Math.floor(256 / VERIFIER_CHARSET.length) * VERIFIER_CHARSET.length;
     let verifier = "";
-    for (let i = 0; i < random.length; i++) {
-        verifier += VERIFIER_CHARSET[(random[i] as number) % VERIFIER_CHARSET.length];
+    const chunk = new Uint8Array(VERIFIER_LENGTH);
+    while (verifier.length < VERIFIER_LENGTH) {
+        crypto.getRandomValues(chunk);
+        for (let i = 0; i < chunk.length && verifier.length < VERIFIER_LENGTH; i++) {
+            const byte = chunk[i] as number;
+            if (byte < maxUsable) {
+                verifier += VERIFIER_CHARSET[byte % VERIFIER_CHARSET.length];
+            }
+        }
     }
     return verifier;
 }
@@ -37,28 +44,20 @@ function base64UrlEncode(buffer: ArrayBuffer): string {
     for (let i = 0; i < bytes.length; i++) {
         binary += String.fromCharCode(bytes[i] as number);
     }
-    return btoa(binary)
-        .replace(/\+/g, "-")
-        .replace(/\//g, "_")
-        .replace(/=+$/, "");
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 /**
  * Derive the S256 `code_challenge` for a verifier.
  * Requires a secure context (HTTPS or localhost) for WebCrypto.
  */
-export async function generateCodeChallenge(
-    verifier: string
-): Promise<string> {
+export async function generateCodeChallenge(verifier: string): Promise<string> {
     if (!crypto.subtle) {
         throw new Error(
-            "WebCrypto is unavailable: PKCE S256 requires a secure context (HTTPS or localhost)."
+            "WebCrypto is unavailable: PKCE S256 requires a secure context (HTTPS or localhost).",
         );
     }
-    const digest = await crypto.subtle.digest(
-        "SHA-256",
-        new TextEncoder().encode(verifier)
-    );
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
     return base64UrlEncode(digest);
 }
 

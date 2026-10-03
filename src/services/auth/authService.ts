@@ -16,12 +16,10 @@ import { isAllowedServerUrl } from "../../lib/server-url";
  * allowed (self-hosted Halo); shared login links are allowlisted earlier.
  */
 function isUsableAuthServer(authServer: string): boolean {
-    return (
-        isAllowedServerUrl(authServer, {
-            allowCustomHosts: true,
-            label: "Auth server",
-        })
-    );
+    return isAllowedServerUrl(authServer, {
+        allowCustomHosts: true,
+        label: "Auth server",
+    });
 }
 
 // Token storage keys
@@ -62,7 +60,7 @@ export function loadTokens(): HaloTokens | null {
     } catch (error) {
         console.error(
             "Failed to parse stored tokens:",
-            error instanceof Error ? error.message : "Unknown error"
+            error instanceof Error ? error.message : "Unknown error",
         );
         clearTokens();
     }
@@ -106,10 +104,7 @@ export function getCurrentUser(): HaloUser | null {
  * unknown (e.g. persisted before obtained_at existed) or invalid.
  */
 export function getTokenExpiresAt(tokens: HaloTokens): number | null {
-    if (
-        typeof tokens.obtained_at !== "number" ||
-        !Number.isFinite(tokens.obtained_at)
-    ) {
+    if (typeof tokens.obtained_at !== "number" || !Number.isFinite(tokens.obtained_at)) {
         return null;
     }
     if (
@@ -126,9 +121,7 @@ export function getTokenExpiresAt(tokens: HaloTokens): number | null {
  * True when tokens are missing, of unknown age, expired, or inside the skew
  * window before expiry (i.e. a refresh should happen proactively).
  */
-export function isTokenExpiringSoon(
-    tokens: HaloTokens | null = loadTokens()
-): boolean {
+export function isTokenExpiringSoon(tokens: HaloTokens | null = loadTokens()): boolean {
     if (!tokens?.access_token) {
         return true;
     }
@@ -162,9 +155,7 @@ export async function ensureFreshToken(config: AuthConfig): Promise<boolean> {
 export async function startAuth(config: AuthConfig): Promise<void> {
     // Validate required fields
     if (!config.authServer || !config.clientId || !config.redirectUri) {
-        throw new Error(
-            "Missing required configuration: authServer, clientId, or redirectUri"
-        );
+        throw new Error("Missing required configuration: authServer, clientId, or redirectUri");
     }
     if (!isUsableAuthServer(config.authServer)) {
         throw new Error("Invalid auth server URL. Please reconfigure.");
@@ -193,14 +184,12 @@ export async function startAuth(config: AuthConfig): Promise<void> {
 export async function handleCallback(
     config: AuthConfig,
     code: string,
-    state: string | null
+    state: string | null,
 ): Promise<boolean> {
     // Verify state before any token exchange; never log the values.
     const pkceRequest = loadPkceRequest();
     if (!state || !pkceRequest || state !== pkceRequest.state) {
-        console.warn(
-            "OAuth state mismatch: rejecting callback without token exchange."
-        );
+        console.warn("OAuth state mismatch: rejecting callback without token exchange.");
         clearPkceRequest();
         return false;
     }
@@ -217,9 +206,7 @@ export async function handleCallback(
     try {
         // Validate required fields
         if (!config.authServer || !config.clientId || !config.redirectUri) {
-            throw new Error(
-                "Missing required configuration: authServer, clientId, or redirectUri"
-            );
+            throw new Error("Missing required configuration: authServer, clientId, or redirectUri");
         }
         if (!isUsableAuthServer(config.authServer)) {
             console.warn("Rejecting callback: invalid auth server URL.");
@@ -245,11 +232,7 @@ export async function handleCallback(
 
         if (!tokenResponse.ok) {
             // Log status only: token endpoint bodies can carry sensitive detail.
-            console.error(
-                "Token request failed:",
-                tokenResponse.status,
-                tokenResponse.statusText
-            );
+            console.error("Token request failed:", tokenResponse.status, tokenResponse.statusText);
             return false;
         }
 
@@ -260,12 +243,25 @@ export async function handleCallback(
     } catch (error) {
         console.error(
             "OAuth callback failed:",
-            error instanceof Error ? error.message : "Unknown error"
+            error instanceof Error ? error.message : "Unknown error",
         );
         return false;
     } finally {
         // PKCE material is single-use: always clear it after the exchange.
         clearPkceRequest();
+    }
+}
+
+/**
+ * True only when the token endpoint explicitly reports `invalid_grant`.
+ * Absent or unparsable bodies are treated as transient (never fatal).
+ */
+async function isInvalidGrant(response: Response): Promise<boolean> {
+    try {
+        const body = (await response.json()) as { error?: unknown };
+        return body?.error === "invalid_grant";
+    } catch {
+        return false;
     }
 }
 
@@ -296,17 +292,13 @@ export async function refreshToken(config: AuthConfig): Promise<boolean> {
 
         if (!response.ok) {
             // Log status only: token endpoint bodies can carry sensitive detail.
-            console.error(
-                "Token refresh failed:",
-                response.status,
-                response.statusText
-            );
+            console.error("Token refresh failed:", response.status, response.statusText);
 
-            // If refresh token is invalid/expired, clear everything
-            if (response.status === 400 || response.status === 401) {
-                console.warn(
-                    "Refresh token is invalid/expired, clearing authentication"
-                );
+            // Clear only on a definite invalid_grant (parsed, never logged):
+            // any other status — or an unreadable body — keeps the stored
+            // session so transient failures can retry.
+            if (await isInvalidGrant(response)) {
+                console.warn("Refresh token is invalid/expired, clearing authentication");
                 clearTokens();
             }
             return false;
@@ -324,7 +316,7 @@ export async function refreshToken(config: AuthConfig): Promise<boolean> {
         // fresh login can proceed; only definite invalid_grant clears above.
         console.error(
             "Token refresh failed:",
-            error instanceof Error ? error.message : "Unknown error"
+            error instanceof Error ? error.message : "Unknown error",
         );
         return false;
     }

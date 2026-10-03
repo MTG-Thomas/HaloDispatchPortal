@@ -92,6 +92,7 @@ export function CalendarGrid() {
     // Keyboard shortcuts (Escape behavior retained: clear slot selection)
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.defaultPrevented) return;
             const action = resolveCalendarShortcut({
                 key: e.key,
                 metaKey: e.metaKey,
@@ -99,6 +100,18 @@ export function CalendarGrid() {
                 inEditable: isEditableTarget(e.target),
             });
             if (!action) return;
+
+            // While a dialog is open, only the toggles (and Escape) work so
+            // background shortcuts can't fire behind the modal.
+            const dialogsOpen = paletteOpen || helpOpen;
+            if (
+                dialogsOpen &&
+                action.kind !== "palette" &&
+                action.kind !== "help" &&
+                action.kind !== "clear-selection"
+            ) {
+                return;
+            }
 
             switch (action.kind) {
                 case "clear-selection":
@@ -135,7 +148,16 @@ export function CalendarGrid() {
 
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [clearSelection, setSelectedDate, goPrevious, goNext, setCalendarView, refresh]);
+    }, [
+        clearSelection,
+        setSelectedDate,
+        goPrevious,
+        goNext,
+        setCalendarView,
+        refresh,
+        paletteOpen,
+        helpOpen,
+    ]);
 
     return (
         <div className="flex-1 overflow-auto bg-background">

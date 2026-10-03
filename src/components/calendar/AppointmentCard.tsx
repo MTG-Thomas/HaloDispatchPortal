@@ -123,6 +123,13 @@ export function AppointmentCard({
                     role="slider"
                     tabIndex={0}
                     aria-label="Resize appointment start time"
+                    aria-valuemin={0}
+                    aria-valuemax={
+                        appointment.endTime.getHours() * 60 + appointment.endTime.getMinutes()
+                    }
+                    aria-valuenow={
+                        appointment.startTime.getHours() * 60 + appointment.startTime.getMinutes()
+                    }
                     aria-valuetext={format(appointment.startTime, "h:mm a")}
                     className="absolute top-0 left-0 right-0 h-3 cursor-n-resize opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity flex items-center justify-center bg-black/20 hover:bg-black/30 z-10"
                     onClick={(e) => e.stopPropagation()}
@@ -157,6 +164,13 @@ export function AppointmentCard({
                     role="slider"
                     tabIndex={0}
                     aria-label="Resize appointment end time"
+                    aria-valuemin={
+                        appointment.startTime.getHours() * 60 + appointment.startTime.getMinutes()
+                    }
+                    aria-valuemax={24 * 60 - 1}
+                    aria-valuenow={
+                        appointment.endTime.getHours() * 60 + appointment.endTime.getMinutes()
+                    }
                     aria-valuetext={format(appointment.endTime, "h:mm a")}
                     className="absolute bottom-0 left-0 right-0 h-3 cursor-s-resize opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity flex items-center justify-center bg-black/20 hover:bg-black/30 z-10"
                     onClick={(e) => e.stopPropagation()}

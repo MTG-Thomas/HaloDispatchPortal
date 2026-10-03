@@ -161,8 +161,11 @@ export const createTicketsSlice: StateCreator<DispatchState, [], [], TicketsSlic
             });
         } catch (error) {
             if (isAbortError(error) || signal.aborted) {
-                // Superseded by a newer load: clear spinners, keep old data.
-                set({ ticketsLoading: false, ticketsRefreshing: false });
+                // Superseded by a newer load: clear spinners (unless a newer
+                // load owns them now), keep old data.
+                if (ticketsLoadController === controller || ticketsLoadController === null) {
+                    set({ ticketsLoading: false, ticketsRefreshing: false });
+                }
                 return;
             }
             logger.error("Failed to load tickets:", error);

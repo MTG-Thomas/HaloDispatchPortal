@@ -311,7 +311,8 @@ export const createAppointmentsSlice: StateCreator<DispatchState, [], [], Appoin
 
         if (agentIds.length === 0) {
             logger.warn("No agents selected, skipping appointment load");
-            set({ appointments: [] });
+            cancelAppointmentsLoad();
+            set({ appointments: [], appointmentsLoading: false });
             return;
         }
 
@@ -383,8 +384,14 @@ export const createAppointmentsSlice: StateCreator<DispatchState, [], [], Appoin
             });
         } catch (error) {
             if (isAbortError(error) || signal.aborted) {
-                // Superseded by a newer load: clear spinner, keep old data.
-                set({ appointmentsLoading: false });
+                // Superseded by a newer load: clear spinner (unless a newer
+                // load owns it now), keep old data.
+                if (
+                    appointmentsLoadController === controller ||
+                    appointmentsLoadController === null
+                ) {
+                    set({ appointmentsLoading: false });
+                }
                 return;
             }
             set({

@@ -5,6 +5,7 @@ import { logger } from "@/lib/logger";
 import type { ViewList } from "@/types/halo";
 import type { DispatchState } from "../useDispatchStore";
 import { readLegacySelection } from "../legacy-selection";
+import { cancelTicketsLoad } from "./ticketsSlice";
 
 export interface ListsSlice {
     selectedTicketAreaId: number | null;
@@ -42,6 +43,9 @@ export const createListsSlice: StateCreator<DispatchState, [], [], ListsSlice> =
         viewListsError: null,
 
         setSelectedTicketArea: (ticketAreaId) => {
+            // Stop any in-flight ticket load first so it can't restore
+            // results for the previous area after the reset below.
+            cancelTicketsLoad();
             set({
                 selectedTicketAreaId: ticketAreaId,
                 viewLists: [],
@@ -67,7 +71,12 @@ export const createListsSlice: StateCreator<DispatchState, [], [], ListsSlice> =
                     signal,
                 });
                 if (signal.aborted) {
-                    set({ viewListsLoading: false });
+                    if (
+                        viewListsLoadController === controller ||
+                        viewListsLoadController === null
+                    ) {
+                        set({ viewListsLoading: false });
+                    }
                     return;
                 }
                 set({
@@ -76,7 +85,12 @@ export const createListsSlice: StateCreator<DispatchState, [], [], ListsSlice> =
                 });
             } catch (error) {
                 if (isAbortError(error) || signal.aborted) {
-                    set({ viewListsLoading: false });
+                    if (
+                        viewListsLoadController === controller ||
+                        viewListsLoadController === null
+                    ) {
+                        set({ viewListsLoading: false });
+                    }
                     return;
                 }
                 logger.error("Failed to load view lists:", error);
@@ -99,6 +113,7 @@ export const createListsSlice: StateCreator<DispatchState, [], [], ListsSlice> =
             if (listIds.length > 0) {
                 get().loadTicketsForLists(listIds, 1);
             } else {
+                cancelTicketsLoad();
                 set({
                     haloTickets: [],
                     ticketsByList: new Map(),

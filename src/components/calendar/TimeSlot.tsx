@@ -1,5 +1,4 @@
 import { useState, useEffect, lazy, Suspense } from "react";
-import { isSameDay } from "date-fns";
 import { toast } from "sonner";
 import { useDroppableSlot } from "@/hooks/useDroppableSlot";
 import { useUndoableAppointment } from "@/hooks/useUndoableAppointment";
@@ -166,19 +165,18 @@ export function TimeSlot({
         dropData: { agentId: number; startTime: Date },
     ) => {
         // Warn when the drop would overbook the target day (dispatchers may still
-        // overbook deliberately, so this warns instead of blocking).
+        // overbook deliberately, so this warns instead of blocking). The moving
+        // appointment is excluded from the baseline so same-day moves and
+        // re-drops measure the true projected load.
         const targetAgent = agents.find((a) => a.id === dropData.agentId);
-        if (
-            targetAgent &&
-            !(
-                appointment.agentId === dropData.agentId &&
-                isSameDay(appointment.startTime, dropData.startTime)
-            )
-        ) {
-            const day = dayUtilization(targetAgent, appointments, dropData.startTime);
-            const durationHours =
-                (appointment.endTime.getTime() - appointment.startTime.getTime()) /
-                (1000 * 60 * 60);
+        if (targetAgent) {
+            const others = appointments.filter((apt) => apt.id !== appointment.id);
+            const day = dayUtilization(targetAgent, others, dropData.startTime);
+            // Mirror dayUtilization: unlinked appointments don't count as scheduled.
+            const durationHours = appointment.ticketId
+                ? (appointment.endTime.getTime() - appointment.startTime.getTime()) /
+                  (1000 * 60 * 60)
+                : 0;
             if (
                 day.isWorkingDay &&
                 (day.scheduledHours + durationHours) / day.availableHours >= 1

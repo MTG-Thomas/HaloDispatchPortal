@@ -144,12 +144,14 @@ test.describe("authenticated dispatch (fixtures)", () => {
         );
         await page.goto("/");
 
-        // Either the critical-error overlay or the store error path — but the
-        // app must render *something* legible, never hang on the spinner.
-        await expect(async () => {
-            const body = (await page.textContent("body")) ?? "";
-            expect(body.length).toBeGreaterThan(0);
-            expect(body).not.toMatch(/^\s*$/);
-        }).toPass({ timeout: 15_000 });
+        // The blocking error overlay carries the validation message (loading
+        // ends in this error state instead of spinning forever), with a
+        // manual retry for recovery.
+        await expect(
+            page.getByRole("heading", {
+                name: "Halo PSA returned an unexpected ClientCache response. Please try again later.",
+            }),
+        ).toBeVisible({ timeout: 15_000 });
+        await expect(page.getByRole("button", { name: "Retry Connection" })).toBeVisible();
     });
 });

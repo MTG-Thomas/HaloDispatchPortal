@@ -1,7 +1,6 @@
 import {
     loadTokens,
     refreshToken as refreshAuthToken,
-    clearTokens,
     isTokenExpiringSoon,
 } from "@/services/auth/authService";
 import { useConfigStore } from "@/stores/configStore";
@@ -140,9 +139,12 @@ export async function apiRequest<T>(endpoint: string, options: RequestInit = {})
             clientId: config.clientId,
             redirectUri: config.redirectUri,
         });
-        if (refreshSuccess) {
-            tokens = loadTokens();
+        if (!refreshSuccess) {
+            // Refresh was attempted and failed: the stored access token is
+            // expired, so fail fast instead of sending a doomed request.
+            throw new ApiError(401, "Unauthorized", "Session expired. Please sign in again.");
         }
+        tokens = loadTokens();
         if (!tokens) {
             throw new ApiError(401, "Unauthorized", "Session expired. Please sign in again.");
         }
@@ -190,9 +192,10 @@ export async function apiRequest<T>(endpoint: string, options: RequestInit = {})
                     headers,
                 });
             } else {
-                // Refresh failed, clear tokens and throw error
+                // Refresh failed. Token lifetime is owned by refreshToken
+                // (it clears only on definite invalid_grant), so a transient
+                // failure here must not wipe the stored session.
                 console.error("Token refresh failed");
-                clearTokens();
                 throw new ApiError(401, "Unauthorized", "Token refresh failed");
             }
         }

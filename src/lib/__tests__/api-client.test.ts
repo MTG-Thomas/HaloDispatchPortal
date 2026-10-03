@@ -98,7 +98,7 @@ describe("api-client", () => {
         expect(loadTokens()?.access_token).toBe("access-2");
     });
 
-    it("clears tokens and throws when refresh fails after 401", async () => {
+    it("keeps tokens and throws when refresh fails transiently after 401", async () => {
         seedConfig();
         seedFreshTokens();
         server.use(
@@ -111,7 +111,49 @@ describe("api-client", () => {
         );
 
         await expect(get("/api/Tickets")).rejects.toThrow(ApiError);
+        // No invalid_grant: the stored session survives for a later retry.
+        expect(loadTokens()?.access_token).toBe("access-1");
+    });
+
+    it("clears tokens when refresh fails with invalid_grant after 401", async () => {
+        seedConfig();
+        seedFreshTokens();
+        server.use(
+            http.get(`${RESOURCE}/api/Tickets`, () => {
+                return new HttpResponse(null, { status: 401 });
+            }),
+            http.post(`${AUTH}/token`, () => {
+                return HttpResponse.json({ error: "invalid_grant" }, { status: 400 });
+            }),
+        );
+
+        await expect(get("/api/Tickets")).rejects.toThrow(ApiError);
         expect(loadTokens()).toBeNull();
+    });
+
+    it("fails fast without sending the request when proactive refresh fails", async () => {
+        seedConfig();
+        saveTokens({
+            access_token: "stale-access",
+            refresh_token: "refresh-1",
+            expires_in: 0,
+            token_type: "Bearer",
+            scope: "all",
+        });
+        let ticketCalls = 0;
+        server.use(
+            http.get(`${RESOURCE}/api/Tickets`, () => {
+                ticketCalls += 1;
+                return HttpResponse.json({ tickets: [] });
+            }),
+            http.post(`${AUTH}/token`, () => {
+                return new HttpResponse(null, { status: 500 });
+            }),
+        );
+
+        await expect(get("/api/Tickets")).rejects.toThrow(ApiError);
+        expect(ticketCalls).toBe(0);
+        expect(loadTokens()?.access_token).toBe("stale-access");
     });
 
     it("never surfaces raw error bodies in messages", async () => {

@@ -113,6 +113,10 @@ describe("authService OAuth flow", () => {
         sessionStorage.clear();
     });
 
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
     it("startAuth rejects missing configuration", async () => {
         await expect(startAuth({ authServer: "", clientId: "", redirectUri: "" })).rejects.toThrow(
             "Missing required configuration",
@@ -226,11 +230,42 @@ describe("authService OAuth flow", () => {
             ok: false,
             status: 400,
             statusText: "Bad Request",
+            json: async () => ({ error: "invalid_grant" }),
         });
         vi.stubGlobal("fetch", fetchMock);
 
         expect(await refreshToken(CONFIG)).toBe(false);
         expect(loadTokens()).toBeNull();
+    });
+
+    it("refreshToken keeps tokens on a 400 without invalid_grant", async () => {
+        saveTokens(tokens());
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: false,
+            status: 400,
+            statusText: "Bad Request",
+            json: async () => ({ error: "invalid_request" }),
+        });
+        vi.stubGlobal("fetch", fetchMock);
+
+        expect(await refreshToken(CONFIG)).toBe(false);
+        expect(loadTokens()?.access_token).toBe("access");
+    });
+
+    it("refreshToken keeps tokens when the error body is unreadable", async () => {
+        saveTokens(tokens());
+        const fetchMock = vi.fn().mockResolvedValue({
+            ok: false,
+            status: 500,
+            statusText: "Internal Server Error",
+            json: async () => {
+                throw new Error("no json");
+            },
+        });
+        vi.stubGlobal("fetch", fetchMock);
+
+        expect(await refreshToken(CONFIG)).toBe(false);
+        expect(loadTokens()?.access_token).toBe("access");
     });
 
     it("refreshToken keeps tokens on network failure for later retry", async () => {

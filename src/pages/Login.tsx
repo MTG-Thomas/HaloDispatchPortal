@@ -1,25 +1,17 @@
 import React, { useEffect, useRef, useState, lazy, Suspense } from "react";
 import { Navigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import {
-    Card,
-    CardContent,
-    CardDescription,
-    CardHeader,
-    CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/contexts/AuthContext";
 import { useConfig } from "@/hooks/useConfig";
 import type { HaloConfig } from "@/hooks/useConfig";
-import {
-    isAllowedServerUrl,
-    isValidTenantSlug,
-    normalizeServerUrl,
-} from "@/lib/server-url";
+import { isAllowedServerUrl, isValidTenantSlug, normalizeServerUrl } from "@/lib/server-url";
 import { AlertTriangle, Calendar, Link2, Shield, Zap } from "lucide-react";
 
 // Lazy load ConfigDialog - only needed when user clicks to configure
-const ConfigDialog = lazy(() => import("@/components/ConfigDialog").then(m => ({ default: m.ConfigDialog })));
+const ConfigDialog = lazy(() =>
+    import("@/components/ConfigDialog").then((m) => ({ default: m.ConfigDialog })),
+);
 
 const MAX_CLIENT_ID_LENGTH = 256;
 
@@ -46,11 +38,11 @@ const Login: React.FC = () => {
         }
         processedQueryRef.current = queryString;
 
-        const tenant = searchParams.get('tenant');
-        const resourceServer = searchParams.get('resourceServer');
-        const authServer = searchParams.get('authServer');
-        const clientId = searchParams.get('clientId');
-        const redirectUri = searchParams.get('redirectUri');
+        const tenant = searchParams.get("tenant");
+        const resourceServer = searchParams.get("resourceServer");
+        const authServer = searchParams.get("authServer");
+        const clientId = searchParams.get("clientId");
+        const redirectUri = searchParams.get("redirectUri");
 
         // Strip the query string immediately so shared secrets do not linger
         // in the URL, history, or a page refresh re-prompt.
@@ -67,42 +59,38 @@ const Login: React.FC = () => {
             if (isValidTenantSlug(tenant)) {
                 staged.tenant = tenant.trim();
             } else {
-                issues.push('Tenant was ignored: not a valid HaloPSA tenant name.');
+                issues.push("Tenant was ignored: not a valid HaloPSA tenant name.");
             }
         }
         if (resourceServer) {
-            if (isAllowedServerUrl(resourceServer, { label: 'Resource server' })) {
+            if (isAllowedServerUrl(resourceServer, { label: "Resource server" })) {
                 staged.resourceServer = normalizeServerUrl(resourceServer);
             } else {
                 issues.push(
-                    'Resource server was ignored: shared links must use an https *.halopsa.com address.'
+                    "Resource server was ignored: shared links must use an https *.halopsa.com address.",
                 );
             }
         }
         if (authServer) {
-            if (isAllowedServerUrl(authServer, { label: 'Auth server' })) {
+            if (isAllowedServerUrl(authServer, { label: "Auth server" })) {
                 staged.authServer = normalizeServerUrl(authServer);
             } else {
                 issues.push(
-                    'Auth server was ignored: shared links must use an https *.halopsa.com address.'
+                    "Auth server was ignored: shared links must use an https *.halopsa.com address.",
                 );
             }
         }
         if (clientId) {
             const trimmed = clientId.trim();
-            if (
-                trimmed &&
-                trimmed.length <= MAX_CLIENT_ID_LENGTH &&
-                !/[\s<>]/.test(trimmed)
-            ) {
+            if (trimmed && trimmed.length <= MAX_CLIENT_ID_LENGTH && !/[\s<>]/.test(trimmed)) {
                 staged.clientId = trimmed;
             } else {
-                issues.push('Client ID was ignored: not a plausible client identifier.');
+                issues.push("Client ID was ignored: not a plausible client identifier.");
             }
         }
         if (redirectUri) {
             issues.push(
-                'Redirect URI was ignored: it is generated automatically and never accepted from a link.'
+                "Redirect URI was ignored: it is generated automatically and never accepted from a link.",
             );
         }
 
@@ -111,9 +99,7 @@ const Login: React.FC = () => {
         }
         if (issues.length > 0 || Object.keys(staged).length === 0) {
             setSharedLinkIssues(
-                issues.length > 0
-                    ? issues
-                    : ['The shared link carried no usable configuration.']
+                issues.length > 0 ? issues : ["The shared link carried no usable configuration."],
             );
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -123,6 +109,7 @@ const Login: React.FC = () => {
         if (sharedConfig) {
             saveConfig(sharedConfig);
             setSharedConfig(null);
+            setSharedLinkIssues([]);
         }
     };
 
@@ -149,18 +136,11 @@ const Login: React.FC = () => {
             <Card className="w-full max-w-md">
                 <CardHeader className="text-center">
                     <div className="mx-auto mb-4 flex items-center justify-center">
-                        <img
-                            src="/logo.svg"
-                            alt="Halo Logo"
-                            className="h-12 w-12"
-                        />
+                        <img src="/logo.svg" alt="Halo Logo" className="h-12 w-12" />
                     </div>
-                    <CardTitle className="text-2xl">
-                        Halo Dispatch Portal
-                    </CardTitle>
+                    <CardTitle className="text-2xl">Halo Dispatch Portal</CardTitle>
                     <CardDescription>
-                        Schedule and manage service appointments with your Halo
-                        PSA team
+                        Schedule and manage service appointments with your Halo PSA team
                     </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -171,8 +151,8 @@ const Login: React.FC = () => {
                                 Apply shared configuration?
                             </div>
                             <p className="mt-1 text-muted-foreground">
-                                A shared login link proposes these settings.
-                                Nothing is applied until you confirm.
+                                A shared login link proposes these settings. Nothing is applied
+                                until you confirm.
                             </p>
                             <dl className="mt-2 space-y-1 break-all text-xs">
                                 {sharedConfig.tenant && (
@@ -263,34 +243,24 @@ const Login: React.FC = () => {
                         </Suspense>
 
                         {isLoaded && isConfigured && (
-                            <Button
-                                onClick={handleLogin}
-                                className="w-full"
-                                disabled={isLoading}
-                            >
-                                {isLoading
-                                    ? "Connecting..."
-                                    : "Login with HaloPSA"}
+                            <Button onClick={handleLogin} className="w-full" disabled={isLoading}>
+                                {isLoading ? "Connecting..." : "Login with HaloPSA"}
                             </Button>
                         )}
                     </div>
 
                     {!isConfigured && (
                         <div className="text-sm text-muted-foreground text-center">
-                            Please configure your Halo settings before
-                            connecting
+                            Please configure your Halo settings before connecting
                         </div>
                     )}
 
                     <div className="text-xs text-muted-foreground text-center pt-4 border-t">
-                        <p>
-                            You'll need to create an OAuth application in your
-                            Halo instance
-                        </p>
+                        <p>You'll need to create an OAuth application in your Halo instance</p>
                         <p>and configure the settings above to get started.</p>
                         <p className="mt-2 font-medium">
-                            💡 The Redirect URI is automatically generated - use
-                            that value in your Halo OAuth app configuration.
+                            💡 The Redirect URI is automatically generated - use that value in your
+                            Halo OAuth app configuration.
                         </p>
                     </div>
                 </CardContent>

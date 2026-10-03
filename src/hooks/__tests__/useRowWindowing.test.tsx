@@ -58,6 +58,37 @@ describe("useRowWindowing", () => {
         expect(screen.queryByTestId("sentinel")).toBeNull();
     });
 
+    it("re-observes the new sentinel when the table remounts with identical counts", () => {
+        const observed: unknown[] = [];
+        class RemountObserver {
+            constructor(cb: ObserverCallback) {
+                callback = cb;
+            }
+            observe(el: unknown) {
+                observed.push(el);
+            }
+            disconnect() {}
+            unobserve() {}
+        }
+        vi.stubGlobal("IntersectionObserver", RemountObserver);
+
+        const { rerender } = render(<Harness key="a" total={100} chunk={40} />);
+        expect(screen.getAllByTestId("row")).toHaveLength(40);
+        const firstSentinel = observed[0];
+        expect(firstSentinel).toBeDefined();
+
+        // Remount with the same row count (e.g. page 1 -> 2, both full).
+        rerender(<Harness key="b" total={100} chunk={40} />);
+        expect(observed.length).toBeGreaterThan(1);
+        expect(observed[observed.length - 1]).not.toBe(firstSentinel);
+
+        // The new sentinel drives growth.
+        act(() => {
+            callback([{ isIntersecting: true }]);
+        });
+        expect(screen.getAllByTestId("row")).toHaveLength(80);
+    });
+
     it("ignores non-intersecting callbacks", () => {
         stubObserver();
         render(<Harness total={100} chunk={40} />);

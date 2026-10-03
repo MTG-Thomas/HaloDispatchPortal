@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 export const ROW_WINDOW_CHUNK = 40;
 
@@ -6,7 +6,7 @@ export interface RowWindowing {
     /** How many leading rows to render. */
     visibleCount: number;
     /** Attach to a sentinel element after the last row to grow the window. */
-    sentinelRef: React.RefObject<HTMLTableRowElement | null>;
+    sentinelRef: React.Ref<HTMLTableRowElement>;
     /** Reset to the first chunk (call when the row set changes identity). */
     reset: () => void;
 }
@@ -18,7 +18,13 @@ export interface RowWindowing {
  */
 export function useRowWindowing(totalRows: number, chunkSize = ROW_WINDOW_CHUNK): RowWindowing {
     const [visibleCount, setVisibleCount] = useState(() => Math.min(chunkSize, totalRows));
-    const sentinelRef = useRef<HTMLTableRowElement | null>(null);
+    // Callback ref (not a RefObject): the observer effect keys on the actual
+    // node, so a remounted table re-observes its new sentinel even when the
+    // row count and visibleCount are unchanged (e.g. page 1 -> 2, same size).
+    const [sentinelNode, setSentinelNode] = useState<HTMLTableRowElement | null>(null);
+    const sentinelRef = useCallback((node: HTMLTableRowElement | null) => {
+        setSentinelNode(node);
+    }, []);
 
     const reset = useCallback(() => {
         setVisibleCount(Math.min(chunkSize, totalRows));
@@ -31,8 +37,7 @@ export function useRowWindowing(totalRows: number, chunkSize = ROW_WINDOW_CHUNK)
     }, [chunkSize, totalRows]);
 
     useEffect(() => {
-        const sentinel = sentinelRef.current;
-        if (!sentinel || visibleCount >= totalRows) return;
+        if (!sentinelNode || visibleCount >= totalRows) return;
         if (typeof IntersectionObserver === "undefined") {
             setVisibleCount(totalRows);
             return;
@@ -45,9 +50,9 @@ export function useRowWindowing(totalRows: number, chunkSize = ROW_WINDOW_CHUNK)
             },
             { rootMargin: "400px" },
         );
-        observer.observe(sentinel);
+        observer.observe(sentinelNode);
         return () => observer.disconnect();
-    }, [chunkSize, totalRows, visibleCount]);
+    }, [chunkSize, totalRows, visibleCount, sentinelNode]);
 
     return { visibleCount, sentinelRef, reset };
 }

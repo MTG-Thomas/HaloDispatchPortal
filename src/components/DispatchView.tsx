@@ -44,7 +44,10 @@ export function DispatchView() {
     // Apply the persisted ticket-area selection once reference data is loaded.
     // Falls back to the first area for fresh users or stale persisted ids.
     // Guarded by the loading flags so user-initiated area switches (which clear
-    // viewLists before reloading) don't retrigger this effect.
+    // viewLists before reloading) don't retrigger this effect. The applied ref
+    // gives apply-once-per-area semantics so a load that finishes with zero
+    // lists (or an error) doesn't refire on every render.
+    const appliedAreaRef = useRef<number | null>(null);
     useEffect(() => {
         if (!clientCache || viewListsLoading || viewLists.length > 0) {
             return;
@@ -52,14 +55,16 @@ export function DispatchView() {
         if (selectedTicketAreaId) {
             const area = clientCache.ticketareas.find((a) => a.id === selectedTicketAreaId);
             const targetId = area ? area.id : clientCache.ticketareas[0]?.id;
-            if (targetId !== undefined) {
-                if (targetId === selectedTicketAreaId) {
-                    // Same area as the persisted selection: load its lists without
-                    // resetting (setSelectedTicketArea clears the persisted lists).
-                    loadViewLists(targetId);
-                } else {
-                    setSelectedTicketArea(targetId);
-                }
+            if (targetId === undefined || appliedAreaRef.current === targetId) {
+                return;
+            }
+            appliedAreaRef.current = targetId;
+            if (targetId === selectedTicketAreaId) {
+                // Same area as the persisted selection: load its lists without
+                // resetting (setSelectedTicketArea clears the persisted lists).
+                loadViewLists(targetId);
+            } else {
+                setSelectedTicketArea(targetId);
             }
         } else if (clientCache.ticketareas.length > 0) {
             setSelectedTicketArea(clientCache.ticketareas[0].id);
