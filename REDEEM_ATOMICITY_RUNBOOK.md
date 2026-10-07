@@ -20,6 +20,20 @@ Does NOT do: KV has no compare-and-swap, so two confirms on different
 isolates within one KV round-trip can still both claim and both write Halo
 appointments. Never describe PR #8 as globally atomic or fully solved.
 
+## Claim TTL vs hung POSTs (CodeRabbit round 1, addressed)
+
+Every Worker→Halo call now aborts after `DEFAULT_HALO_REQUEST_TIMEOUT_MS`
+(30s). Worst-case redeem hold is ~8 calls × 30s = 240s, under the 300s
+`CLAIM_TTL_MS` — no POST can still be client-pending when takeover becomes
+possible, so a stale-claim takeover can no longer race a hung write.
+
+Remaining residual, honestly: abort stops our wait, not Halo's server-side
+execution. A POST aborted client-side may still land, and a later takeover
+confirm could then double-book. No client-side mechanism can observe that;
+the true fix is Halo-side request idempotency (no known Halo capability —
+do not invent one) or post-abort reconciliation. The DO proposal below
+does not fix this residual either; it fixes claim serialization only.
+
 ## Reproduced failure (evidence)
 
 `worker/__tests__/redeem-race.test.ts` gates overlapping appointment POSTs

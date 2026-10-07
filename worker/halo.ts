@@ -24,7 +24,23 @@ export interface HaloClientOptions {
     /** Halo auth server origin (token endpoint host). */
     authServer: string;
     clientId: string;
+    /**
+     * Per-request timeout in ms (default `DEFAULT_HALO_REQUEST_TIMEOUT_MS`).
+     * Must stay far below `CLAIM_TTL_MS`: a redeem holds its claim across
+     * at most ~8 Halo calls (4 reads/writes plus 401-refresh retries), so
+     * the worst case must still settle before a stale claim can be taken
+     * over — otherwise a takeover could double-book behind a hung POST.
+     */
+    requestTimeoutMs?: number;
 }
+
+/**
+ * Default Halo request timeout. Worst-case redeem hold: 8 calls x 30s =
+ * 240s, under the 300s claim TTL — no POST can still be client-pending
+ * when takeover becomes possible. (Abort stops our wait, not Halo's
+ * server-side execution; see the runbook residual.)
+ */
+export const DEFAULT_HALO_REQUEST_TIMEOUT_MS = 30_000;
 
 export class HaloApiError extends Error {
     readonly status: number;
@@ -147,17 +163,33 @@ export function createHaloClient(options: HaloClientOptions): HaloClient {
         : null;
     const authServer = stripTrailingSlash(options.authServer);
     const { fetchImpl, clientId } = options;
+    const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_HALO_REQUEST_TIMEOUT_MS;
     const requireResourceServer = (): string => {
         if (!resourceServer) {
             throw new HaloApiError(500, "Halo resource server not configured");
         }
         return resourceServer;
     };
+    /** Abort-honoring fetch: hung Halo calls fail instead of outliving claims. */
+    const timedFetch: FetchImpl = async (input, init) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+        try {
+            return await fetchImpl(input, { ...init, signal: controller.signal });
+        } catch (error) {
+            if (error instanceof Error && error.name === "AbortError") {
+                throw new HaloApiError(502, `Halo request timed out after ${requestTimeoutMs}ms`);
+            }
+            throw error;
+        } finally {
+            clearTimeout(timer);
+        }
+    };
 
     return {
         async getTicket(accessToken: string, ticketId: number): Promise<unknown> {
             const base = requireResourceServer();
-            const response = await fetchImpl(`${base}/api/Tickets/${ticketId}`, {
+            const response = await timedFetch(`${base}/api/Tickets/${ticketId}`, {
                 headers: { Authorization: `Bearer ${accessToken}` },
             });
             if (!response.ok) {
@@ -170,7 +202,7 @@ export function createHaloClient(options: HaloClientOptions): HaloClient {
         },
 
         async refreshTokenPair(pair: HaloTokenPair): Promise<HaloTokenPair> {
-            const response = await fetchImpl(`${authServer}/token`, {
+            const response = await timedFetch(`${authServer}/token`, {
                 method: "POST",
                 headers: { "Content-Type": "application/x-www-form-urlencoded" },
                 body: new URLSearchParams({
@@ -219,7 +251,7 @@ export function createHaloClient(options: HaloClientOptions): HaloClient {
                 excluderecurringmaster: "true",
                 showshifts: "false",
             });
-            const response = await fetchImpl(
+            const response = await timedFetch(
                 `${requireResourceServer()}/api/Appointment?${params}`,
                 {
                     headers: { Authorization: `Bearer ${accessToken}` },
@@ -242,7 +274,7 @@ export function createHaloClient(options: HaloClientOptions): HaloClient {
             const params = new URLSearchParams({
                 reassign: "true",
             });
-            const response = await fetchImpl(`${requireResourceServer()}/api/agent?${params}`, {
+            const response = await timedFetch(`${requireResourceServer()}/api/agent?${params}`, {
                 headers: { Authorization: `Bearer ${accessToken}` },
             });
             if (!response.ok) {
@@ -255,7 +287,7 @@ export function createHaloClient(options: HaloClientOptions): HaloClient {
         },
 
         async createAppointment(accessToken, payload): Promise<number> {
-            const response = await fetchImpl(`${requireResourceServer()}/api/appointment`, {
+            const response = await timedFetch(`${requireResourceServer()}/api/appointment`, {
                 method: "POST",
                 headers: {
                     Authorization: `Bearer ${accessToken}`,

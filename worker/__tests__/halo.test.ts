@@ -65,9 +65,12 @@ describe("Halo client", () => {
             id: 42,
             summary: "Printer down",
         });
-        expect(fetchImpl).toHaveBeenCalledWith("https://tenant.halopsa.com/api/Tickets/42", {
-            headers: { Authorization: "Bearer access-abc" },
-        });
+        expect(fetchImpl).toHaveBeenCalledWith(
+            "https://tenant.halopsa.com/api/Tickets/42",
+            expect.objectContaining({
+                headers: { Authorization: "Bearer access-abc" },
+            }),
+        );
     });
 
     it("throws HaloApiError on ticket failures", async () => {
@@ -259,6 +262,48 @@ describe("Halo client", () => {
         });
         const error = await client.createAppointment("a", {}).catch((e: unknown) => e);
         expect(error).toBeInstanceOf(HaloApiError);
+    });
+
+    it("aborts a hung Halo call after requestTimeoutMs", async () => {
+        // Abort-honoring transport: rejects only when the client aborts,
+        // proving the timeout wiring rather than the stub's own timer.
+        const fetchImpl: FetchImpl = (_input, init) =>
+            new Promise<Response>((_resolve, reject) => {
+                init?.signal?.addEventListener("abort", () => {
+                    reject(new DOMException("aborted", "AbortError"));
+                });
+            });
+        const client = createHaloClient({
+            fetchImpl,
+            resourceServer: "https://tenant.halopsa.com",
+            authServer: "https://auth.halopsa.com",
+            clientId: "client-1",
+            requestTimeoutMs: 20,
+        });
+        const error = await client.createAppointment("a", {}).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(HaloApiError);
+        expect((error as HaloApiError).status).toBe(502);
+        expect((error as HaloApiError).message).toContain("timed out");
+    });
+
+    it("passes an abort signal to the transport on every call", async () => {
+        const fetchImpl: FetchImpl = vi.fn(async () => Response.json([]));
+        const client = createHaloClient({
+            fetchImpl,
+            resourceServer: "https://tenant.halopsa.com",
+            authServer: "https://auth.halopsa.com",
+            clientId: "client-1",
+        });
+        await client.getAppointments("a", {
+            startDate: "2026-10-05T00:00:00.000Z",
+            endDate: "2026-10-06T00:00:00.000Z",
+            agentIds: [7],
+        });
+        const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [
+            string,
+            RequestInit,
+        ];
+        expect(init.signal).toBeInstanceOf(AbortSignal);
     });
 });
 
