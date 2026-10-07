@@ -63,10 +63,12 @@ interface HaloStub {
     posts: { url: string; body: unknown }[];
     /** How many appointment POSTs overlapped inside the barrier. */
     maxOverlap: number;
+    /** Appointment-list GETs served (proves live validation ran). */
+    appointmentReads: number;
 }
 
 function stubHalo(created: unknown[] = [{ id: 555 }]): HaloStub {
-    const stub: HaloStub = { posts: [], maxOverlap: 0 };
+    const stub: HaloStub = { posts: [], maxOverlap: 0, appointmentReads: 0 };
     let inFlight = 0;
     let arrivals = 0;
     let release!: () => void;
@@ -113,6 +115,7 @@ function stubHalo(created: unknown[] = [{ id: 555 }]): HaloStub {
             });
         }
         if (url.includes("/api/Appointment") || url.includes("/api/appointment")) {
+            stub.appointmentReads += 1;
             return Response.json([]);
         }
         return new Response("unexpected halo call", { status: 500 });
@@ -263,6 +266,50 @@ describe("concurrent redeem", () => {
         const retry = await postBook(testEnv, rid, { token, ...slot, utcOffset: 0 });
         expect(retry.status).toBe(201);
         expect(stub.posts).toHaveLength(1);
+    });
+
+    it("series all-invalid validation releases the claim for corrected retries", async () => {
+        const testEnv = env();
+        const stub = stubHalo([{ id: 701 }, { id: 702 }]);
+        const dates = nextWeekdays(2);
+        const { rid, token } = await mint(testEnv, { occurrences: dates });
+
+        // 03:00Z picks pass semantic checks (issued dates, valid agent and
+        // duration) but fail live business-hours validation after claiming.
+        const bad = await postBook(testEnv, rid, {
+            token,
+            bookings: dates.map((date) => ({
+                agentId: 7,
+                start: `${date}T03:00:00.000Z`,
+                end: `${date}T03:30:00.000Z`,
+                occurrence: date,
+            })),
+            utcOffset: 0,
+        });
+        expect(bad.status).toBe(400);
+        expect(bad.json.error).toBe("invalid-slot");
+        expect(stub.posts).toHaveLength(0);
+        // Live re-check ran: this reached valid.length === 0, not the
+        // earlier semantic rejection.
+        expect(stub.appointmentReads).toBeGreaterThan(0);
+
+        const record = await getBookingRequest(testEnv.BOOKING_REQUESTS, rid);
+        expect(record?.status).toBe("pending");
+        expect(record?.claimId).toBeUndefined();
+
+        // Corrected retry books instead of failing booking-in-progress.
+        const slots = await getSlots(testEnv, rid, token);
+        const occurrences = slots.occurrences as {
+            date: string;
+            slots: { agentId: number; start: string; end: string }[];
+        }[];
+        const retry = await postBook(testEnv, rid, {
+            token,
+            bookings: occurrences.map((o) => ({ ...o.slots[0], occurrence: o.date })),
+            utcOffset: 0,
+        });
+        expect(retry.status).toBe(201);
+        expect(stub.posts).toHaveLength(2);
     });
 
     it("takes over a stale claim instead of blocking the confirm", async () => {

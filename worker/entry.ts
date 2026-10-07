@@ -1716,6 +1716,7 @@ async function handleSeriesBook(
         const topError: SeriesItemError = errors.includes("slot-taken")
             ? "slot-taken"
             : "invalid-slot";
+        await releaseBookingClaim(env.BOOKING_REQUESTS, rid, claimId);
         return json(topError === "slot-taken" ? 409 : 400, {
             error: topError,
             rid,
