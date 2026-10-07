@@ -440,29 +440,29 @@ export async function releaseBookingClaim(
     now: Date = new Date(),
 ): Promise<BookingRequestRecord | null> {
     const key = bookingRequestKey(rid);
-    const raw = await kv.get(key);
-    if (raw === null) {
-        return null;
-    }
-    const record = parseRecord(raw);
-    if (record.status !== "pending" || record.claimId !== claimId) {
-        return null;
-    }
-    const updated: BookingRequestRecord = {
-        ...record,
-        claimId: undefined,
-        claimedAt: undefined,
-        updatedAt: now.toISOString(),
-    };
     try {
+        const raw = await kv.get(key);
+        if (raw === null) {
+            return null;
+        }
+        const record = parseRecord(raw);
+        if (record.status !== "pending" || record.claimId !== claimId) {
+            return null;
+        }
+        const updated: BookingRequestRecord = {
+            ...record,
+            claimId: undefined,
+            claimedAt: undefined,
+            updatedAt: now.toISOString(),
+        };
         await kv.put(key, JSON.stringify(updated), {
             expirationTtl: recordTtlSeconds(updated.exp, Math.floor(now.getTime() / 1000)),
         });
+        return updated;
     } catch {
         // Best-effort: an unreleased claim expires via CLAIM_TTL_MS.
         return null;
     }
-    return updated;
 }
 
 export interface FinalizeBookingOptions {

@@ -211,6 +211,20 @@ describe("claim-on-load and single-book redeem", () => {
         await expect(releaseBookingClaim(kv, "missing", "claim-a")).resolves.toBeNull();
     });
 
+    it("release returns null instead of throwing when KV fails", async () => {
+        const kv = await pending("rid-release-fail");
+        await claimBookingForRedeem(kv, "rid-release-fail", "claim-a");
+        const failing: KeyValueClient = {
+            ...kv,
+            get: async () => {
+                throw new Error("kv down");
+            },
+        };
+        await expect(
+            releaseBookingClaim(failing, "rid-release-fail", "claim-a"),
+        ).resolves.toBeNull();
+    });
+
     it("finalizes only for the claim holder and clears the claim", async () => {
         const kv = await pending("rid-holder");
         await claimBookingForRedeem(kv, "rid-holder", "claim-a");
