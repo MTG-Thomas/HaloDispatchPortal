@@ -38,7 +38,7 @@ serialization point, with transactional storage holding one of
 
 - Worker calls `claim()` before any Halo I/O and `finalize(ids)` after.
   The DO admits exactly one holder; losers get a deterministic conflict
-  *before* any Halo write, on every isolate.
+  _before_ any Halo write, on every isolate.
 - Stale holders expire inside the DO (lazy expiry on access; no alarm
   needed): a claim older than the TTL is treated as absent.
 - Cancel/extend/expiry-flip route through the DO too, so dispatcher
