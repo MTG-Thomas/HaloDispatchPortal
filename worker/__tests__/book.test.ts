@@ -37,6 +37,16 @@ function freshIp(): string {
     return `10.9.0.${ipCounter}`;
 }
 
+/** A future Tuesday (UTC): fixed weekday, never in the past. */
+function futureTuesdayDateString(): string {
+    const now = new Date();
+    const day = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+    while (day.getUTCDay() !== 2) {
+        day.setUTCDate(day.getUTCDate() + 1);
+    }
+    return day.toISOString().slice(0, 10);
+}
+
 /** A future weekday (UTC) safely inside the 14-day slot window. */
 function futureWeekdayDateString(): string {
     const now = new Date();
@@ -592,10 +602,12 @@ describe("book endpoint", () => {
     it("rejects slots outside dispatcher business hours", async () => {
         // 07:00Z Tuesday is 09:00 for a UTC+2 customer but 07:00 for a UTC
         // dispatcher: in-hours for the picker offset, out for the business.
+        // Relative date: the slot must be in the future on the day the suite runs.
+        const tuesday = futureTuesdayDateString();
         const body = {
             agentId: 7,
-            start: "2026-10-06T07:00:00.000Z",
-            end: "2026-10-06T07:30:00.000Z",
+            start: `${tuesday}T07:00:00.000Z`,
+            end: `${tuesday}T07:30:00.000Z`,
             utcOffset: 120,
         };
         const utcEnv = env();

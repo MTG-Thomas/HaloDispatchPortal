@@ -91,6 +91,7 @@ describe("fetchBookSlots", () => {
         [410, { error: "cancelled" }, "cancelled"],
         [410, {}, "expired"],
         [409, { error: "already-booked", appointmentId: 99 }, "already-booked"],
+        [409, { error: "booking-in-progress" }, "booking-in-progress"],
         [429, { error: "rate-limited" }, "rate-limited"],
         [502, { error: "halo-unavailable" }, "halo-unavailable"],
         [503, { error: "booking-unavailable" }, "booking-unavailable"],

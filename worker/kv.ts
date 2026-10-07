@@ -94,7 +94,20 @@ export interface BookingRequestRecord {
      * When set, `bookedAppointmentId` mirrors the first id for replay compat.
      */
     bookedAppointmentIds?: number[];
+    /**
+     * Redeem claim: opaque id of the confirm holding this `pending` record,
+     * stamped before any Halo write. Internal only — never exposed in
+     * `publicStatus`, so dispatcher clients see no new status value.
+     * Best-effort on KV (no compare-and-swap): narrows the race window from
+     * seconds to one KV roundtrip; a Durable Object claim is the full fix.
+     */
+    claimId?: string;
+    /** ISO stamp of `claimId`; claims older than `CLAIM_TTL_MS` are stale. */
+    claimedAt?: string;
 }
+
+/** Redeem-claim lifetime: crashed workers must not brick a link past this. */
+export const CLAIM_TTL_MS = 5 * 60 * 1000;
 
 export interface NewBookingRequest {
     rid: string;
@@ -368,15 +381,26 @@ export async function markBookingClicked(
     return { record: updated, firstView: true };
 }
 
+/** True when the record carries a live (unexpired) redeem claim. */
+export function hasFreshClaim(record: BookingRequestRecord, nowMs: number): boolean {
+    if (record.claimId === undefined || record.claimedAt === undefined) {
+        return false;
+    }
+    const claimedMs = Date.parse(record.claimedAt);
+    return Number.isFinite(claimedMs) && nowMs - claimedMs < CLAIM_TTL_MS;
+}
+
 /**
- * Single-book redeem: move `pending` -> `booked` and remember the Halo
- * appointment id so replays can answer `already-booked` without creating a
- * duplicate. Throws `not-found` / `illegal-transition`.
+ * Redeem claim: stamp a `pending` record BEFORE any Halo write, so an
+ * overlapping confirm sees the claim instead of racing through validation
+ * into a duplicate appointment. Stale claims (crashed workers) may be taken
+ * over; terminal records and live foreign claims throw `illegal-transition`.
+ * Throws `not-found` when the rid is unknown.
  */
-export async function markBookingBooked(
+export async function claimBookingForRedeem(
     kv: KeyValueClient,
     rid: string,
-    appointmentId: number,
+    claimId: string,
     now: Date = new Date(),
 ): Promise<BookingRequestRecord> {
     const key = bookingRequestKey(rid);
@@ -385,7 +409,94 @@ export async function markBookingBooked(
         throw new BookingStateError("not-found", `Booking request ${rid} not found`);
     }
     const record = parseRecord(raw);
-    if (record.status !== "pending") {
+    if (record.status !== "pending" || hasFreshClaim(record, now.getTime())) {
+        throw new BookingStateError(
+            "illegal-transition",
+            `Cannot claim booking request ${rid} from ${record.status}`,
+        );
+    }
+    const updated: BookingRequestRecord = {
+        ...record,
+        claimId,
+        claimedAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+    };
+    await kv.put(key, JSON.stringify(updated), {
+        expirationTtl: recordTtlSeconds(updated.exp, Math.floor(now.getTime() / 1000)),
+    });
+    return updated;
+}
+
+/**
+ * Release a redeem claim held by `claimId` (validation/Halo failure paths),
+ * so customer retries are never blocked by our own abandoned claim. No-op
+ * (returns null) when the record is missing, non-pending, or held by another
+ * claim — never throws.
+ */
+export async function releaseBookingClaim(
+    kv: KeyValueClient,
+    rid: string,
+    claimId: string,
+    now: Date = new Date(),
+): Promise<BookingRequestRecord | null> {
+    const key = bookingRequestKey(rid);
+    const raw = await kv.get(key);
+    if (raw === null) {
+        return null;
+    }
+    const record = parseRecord(raw);
+    if (record.status !== "pending" || record.claimId !== claimId) {
+        return null;
+    }
+    const updated: BookingRequestRecord = {
+        ...record,
+        claimId: undefined,
+        claimedAt: undefined,
+        updatedAt: now.toISOString(),
+    };
+    try {
+        await kv.put(key, JSON.stringify(updated), {
+            expirationTtl: recordTtlSeconds(updated.exp, Math.floor(now.getTime() / 1000)),
+        });
+    } catch {
+        // Best-effort: an unreleased claim expires via CLAIM_TTL_MS.
+        return null;
+    }
+    return updated;
+}
+
+export interface FinalizeBookingOptions {
+    now?: Date;
+    /**
+     * Holder check: when provided, the record's live claim must match or the
+     * finalize throws `illegal-transition`. Losers of a cross-isolate claim
+     * race converge to 409 instead of silently clobbering the winner's ids.
+     */
+    expectedClaimId?: string;
+}
+
+/**
+ * Single-book redeem: move `pending` -> `booked` and remember the Halo
+ * appointment id so replays can answer `already-booked` without creating a
+ * duplicate. Clears the redeem claim. Throws `not-found` / `illegal-transition`.
+ */
+export async function markBookingBooked(
+    kv: KeyValueClient,
+    rid: string,
+    appointmentId: number,
+    options: FinalizeBookingOptions = {},
+): Promise<BookingRequestRecord> {
+    const now = options.now ?? new Date();
+    const key = bookingRequestKey(rid);
+    const raw = await kv.get(key);
+    if (raw === null) {
+        throw new BookingStateError("not-found", `Booking request ${rid} not found`);
+    }
+    const record = parseRecord(raw);
+    if (
+        record.status !== "pending" ||
+        (options.expectedClaimId !== undefined && record.claimId !== options.expectedClaimId)
+    ) {
         throw new BookingStateError(
             "illegal-transition",
             `Cannot book request ${rid} from ${record.status}`,
@@ -395,6 +506,8 @@ export async function markBookingBooked(
         ...record,
         status: "booked",
         bookedAppointmentId: appointmentId,
+        claimId: undefined,
+        claimedAt: undefined,
         updatedAt: now.toISOString(),
     };
     await kv.put(key, JSON.stringify(updated), {
@@ -441,22 +554,26 @@ export async function extendBookingExpiry(
 /**
  * Series redeem: move `pending` -> `booked` with the per-occurrence Halo
  * appointment ids (best-effort order). `bookedAppointmentId` mirrors the
- * first id so single-book replay readers keep working. Throws `not-found` /
- * `illegal-transition`.
+ * first id so single-book replay readers keep working. Clears the redeem
+ * claim. Throws `not-found` / `illegal-transition`.
  */
 export async function markBookingSeriesBooked(
     kv: KeyValueClient,
     rid: string,
     appointmentIds: number[],
-    now: Date = new Date(),
+    options: FinalizeBookingOptions = {},
 ): Promise<BookingRequestRecord> {
+    const now = options.now ?? new Date();
     const key = bookingRequestKey(rid);
     const raw = await kv.get(key);
     if (raw === null) {
         throw new BookingStateError("not-found", `Booking request ${rid} not found`);
     }
     const record = parseRecord(raw);
-    if (record.status !== "pending") {
+    if (
+        record.status !== "pending" ||
+        (options.expectedClaimId !== undefined && record.claimId !== options.expectedClaimId)
+    ) {
         throw new BookingStateError(
             "illegal-transition",
             `Cannot book request ${rid} from ${record.status}`,
@@ -467,6 +584,8 @@ export async function markBookingSeriesBooked(
         status: "booked",
         bookedAppointmentId: appointmentIds[0],
         bookedAppointmentIds: [...appointmentIds],
+        claimId: undefined,
+        claimedAt: undefined,
         updatedAt: now.toISOString(),
     };
     await kv.put(key, JSON.stringify(updated), {

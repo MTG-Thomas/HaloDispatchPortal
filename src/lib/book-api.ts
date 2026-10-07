@@ -12,6 +12,7 @@ export type BookErrorCode =
     | "expired"
     | "cancelled"
     | "already-booked"
+    | "booking-in-progress"
     | "slot-taken"
     | "invalid-slot"
     | "invalid-request"
@@ -25,6 +26,7 @@ const KNOWN_CODES: ReadonlySet<string> = new Set([
     "expired",
     "cancelled",
     "already-booked",
+    "booking-in-progress",
     "slot-taken",
     "invalid-slot",
     "invalid-request",
@@ -217,6 +219,8 @@ function messageForCode(code: BookErrorCode): string {
             return "This booking request was cancelled.";
         case "already-booked":
             return "This booking link was already used.";
+        case "booking-in-progress":
+            return "Another booking on this link is in progress. Please wait a moment and try again.";
         case "slot-taken":
             return "That time was just taken. Please pick another time.";
         case "invalid-slot":

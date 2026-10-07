@@ -25,6 +25,7 @@ import {
     BOOKING_EXTEND_MAX_DAYS,
     BOOKING_REQUEST_TTL_SECONDS,
     BookingStateError,
+    claimBookingForRedeem,
     createBookingRequest,
     extendBookingExpiry,
     getBookingRequest,
@@ -34,6 +35,7 @@ import {
     markBookingClicked,
     markBookingSeriesBooked,
     openTokenPair,
+    releaseBookingClaim,
     sealTokenPair,
     setBookingStatus,
     updateSealedTokens,
@@ -1312,6 +1314,78 @@ function buildAppointmentPayload(
     };
 }
 
+/** In-isolate redeem serialization, keyed by rid (see withRedeemLock). */
+const redeemLocks = new Map<string, Promise<void>>();
+
+/**
+ * Serialize confirms per rid within this isolate. Double-submits from one
+ * browser usually land here together; the loser waits, then runs against
+ * the settled record and converges to 409 without touching Halo.
+ * Cross-isolate overlap still relies on the KV claim (best-effort) until the
+ * claim moves to a Durable Object.
+ */
+async function withRedeemLock<T>(rid: string, fn: () => Promise<T>): Promise<T> {
+    const prior = redeemLocks.get(rid);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    const chained = (prior ?? Promise.resolve()).catch(() => undefined).then(() => gate);
+    redeemLocks.set(rid, chained);
+    await (prior ?? Promise.resolve()).catch(() => undefined);
+    try {
+        return await fn();
+    } finally {
+        release();
+        if (redeemLocks.get(rid) === chained) {
+            redeemLocks.delete(rid);
+        }
+    }
+}
+
+/**
+ * Answer for a lost redeem race (claim or finalize conflict): re-read the
+ * record and report its actual state. A live foreign claim means the winner
+ * is still confirming — the retryable `booking-in-progress` code. Exported
+ * for unit tests: the in-progress branch is only reachable cross-isolate.
+ */
+export async function redeemConflict(
+    kv: KeyValueClient,
+    rid: string,
+    series: boolean,
+): Promise<Response> {
+    const current = await getBookingRequest(kv, rid);
+    if (!current) {
+        return json(404, { error: "Booking request not found" });
+    }
+    if (current.status === "cancelled") {
+        return json(410, { error: "cancelled", rid });
+    }
+    if (current.status === "expired") {
+        return json(410, { error: "expired", rid });
+    }
+    if (current.status === "booked") {
+        return json(409, {
+            error: "already-booked",
+            rid,
+            appointmentId: current.bookedAppointmentId ?? null,
+            ...(series
+                ? {
+                      appointmentIds:
+                          current.bookedAppointmentIds ??
+                          (current.bookedAppointmentId !== undefined &&
+                          current.bookedAppointmentId !== null
+                              ? [current.bookedAppointmentId]
+                              : null),
+                  }
+                : {}),
+        });
+    }
+    // Pending here means a live foreign claim (or one released between
+    // our reads): either way the retryable code is the honest answer.
+    return json(409, { error: "booking-in-progress", rid });
+}
+
 async function handleBook(
     request: Request,
     env: BookingEnv,
@@ -1361,6 +1435,18 @@ async function handleBook(
         return json(503, { error: "booking-unavailable" });
     }
 
+    // Claim before any Halo write: an overlapping confirm converges to 409
+    // here instead of racing through validation into a duplicate appointment.
+    const claimId = globalThis.crypto.randomUUID();
+    try {
+        await claimBookingForRedeem(env.BOOKING_REQUESTS, rid, claimId);
+    } catch (error) {
+        if (error instanceof BookingStateError && error.code === "illegal-transition") {
+            return redeemConflict(env.BOOKING_REQUESTS, rid, false);
+        }
+        throw error;
+    }
+
     // Re-check the chosen slot against live appointments: the slot grid may
     // have moved since the customer loaded the picker.
     const nowMs = Date.now();
@@ -1374,6 +1460,7 @@ async function handleBook(
             }),
         );
     } catch {
+        await releaseBookingClaim(env.BOOKING_REQUESTS, rid, claimId);
         return json(502, { error: "halo-unavailable" });
     }
     // Same cached directory the slots path uses, so book-time hours
@@ -1396,6 +1483,7 @@ async function handleBook(
         bufferMin: context.record.bufferMin,
     });
     if (!check.ok) {
+        await releaseBookingClaim(env.BOOKING_REQUESTS, rid, claimId);
         return check.reason === "taken"
             ? json(409, { error: "slot-taken", rid })
             : json(400, { error: "invalid-slot", rid });
@@ -1408,6 +1496,7 @@ async function handleBook(
         );
         ticket = toTicketContext(ticketBody, context.record.ticketId);
     } catch {
+        await releaseBookingClaim(env.BOOKING_REQUESTS, rid, claimId);
         return json(502, { error: "halo-unavailable" });
     }
 
@@ -1426,22 +1515,20 @@ async function handleBook(
             ),
         );
     } catch {
+        await releaseBookingClaim(env.BOOKING_REQUESTS, rid, claimId);
         return json(502, { error: "halo-unavailable" });
     }
 
     try {
-        await markBookingBooked(env.BOOKING_REQUESTS, rid, appointmentId);
+        await markBookingBooked(env.BOOKING_REQUESTS, rid, appointmentId, {
+            expectedClaimId: claimId,
+        });
         await recordAuditEvent(env.BOOKING_REQUESTS, rid, "book", String(appointmentId));
     } catch (error) {
-        // Lost a concurrent redeem race: the appointment exists, but the
-        // record already flipped. Answer replay semantics, no duplicate.
+        // Lost a concurrent redeem race: re-read and report the record's
+        // actual state instead of assuming already-booked.
         if (error instanceof BookingStateError && error.code === "illegal-transition") {
-            const current = await getBookingRequest(env.BOOKING_REQUESTS, rid);
-            return json(409, {
-                error: "already-booked",
-                rid,
-                appointmentId: current?.bookedAppointmentId ?? null,
-            });
+            return redeemConflict(env.BOOKING_REQUESTS, rid, false);
         }
         throw error;
     }
@@ -1511,6 +1598,17 @@ async function handleSeriesBook(
     if (!client) {
         return json(503, { error: "booking-unavailable" });
     }
+    // Claim before any Halo write: an overlapping confirm converges to 409
+    // here instead of racing into duplicate appointments.
+    const claimId = globalThis.crypto.randomUUID();
+    try {
+        await claimBookingForRedeem(env.BOOKING_REQUESTS, rid, claimId);
+    } catch (error) {
+        if (error instanceof BookingStateError && error.code === "illegal-transition") {
+            return redeemConflict(env.BOOKING_REQUESTS, rid, true);
+        }
+        throw error;
+    }
     const { bookings, utcOffsetMin } = parsed.value;
     const results: (SeriesItemResult | null)[] = new Array(bookings.length).fill(null);
     const fail = (index: number, error: SeriesItemError): void => {
@@ -1542,6 +1640,7 @@ async function handleSeriesBook(
         }
     });
     if (candidates.length === 0) {
+        await releaseBookingClaim(env.BOOKING_REQUESTS, rid, claimId);
         return json(400, {
             error: "invalid-slot",
             rid,
@@ -1567,6 +1666,7 @@ async function handleSeriesBook(
         for (const index of candidates) {
             fail(index, "halo-unavailable");
         }
+        await releaseBookingClaim(env.BOOKING_REQUESTS, rid, claimId);
         return json(502, {
             error: "halo-unavailable",
             rid,
@@ -1633,6 +1733,7 @@ async function handleSeriesBook(
         for (const index of valid) {
             fail(index, "halo-unavailable");
         }
+        await releaseBookingClaim(env.BOOKING_REQUESTS, rid, claimId);
         return json(502, {
             error: "halo-unavailable",
             rid,
@@ -1673,6 +1774,7 @@ async function handleSeriesBook(
     }
 
     if (appointmentIds.length === 0) {
+        await releaseBookingClaim(env.BOOKING_REQUESTS, rid, claimId);
         return json(502, {
             error: "halo-unavailable",
             rid,
@@ -1680,23 +1782,14 @@ async function handleSeriesBook(
         });
     }
     try {
-        await markBookingSeriesBooked(env.BOOKING_REQUESTS, rid, appointmentIds);
+        await markBookingSeriesBooked(env.BOOKING_REQUESTS, rid, appointmentIds, {
+            expectedClaimId: claimId,
+        });
     } catch (error) {
-        // Lost a concurrent redeem race: appointments exist, but the record
-        // already flipped. Answer replay semantics, no duplicates.
+        // Lost a concurrent redeem race: re-read and report the record's
+        // actual state instead of assuming already-booked.
         if (error instanceof BookingStateError && error.code === "illegal-transition") {
-            const current = await getBookingRequest(env.BOOKING_REQUESTS, rid);
-            return json(409, {
-                error: "already-booked",
-                rid,
-                appointmentId: current?.bookedAppointmentId ?? null,
-                appointmentIds:
-                    current?.bookedAppointmentIds ??
-                    (current?.bookedAppointmentId !== undefined &&
-                    current?.bookedAppointmentId !== null
-                        ? [current.bookedAppointmentId]
-                        : null),
-            });
+            return redeemConflict(env.BOOKING_REQUESTS, rid, true);
         }
         throw error;
     }
@@ -1790,7 +1883,7 @@ export default {
                 return handleSlots(request, env, url, rid);
             }
             if (request.method === "POST" && action === "book") {
-                return handleBook(request, env, url, rid);
+                return withRedeemLock(rid, () => handleBook(request, env, url, rid));
             }
         }
         return json(404, { error: "Not found" });
