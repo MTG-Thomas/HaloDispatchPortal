@@ -3,17 +3,21 @@ import { describe, expect, it } from "vitest";
 import {
     BOOKING_REQUEST_TTL_SECONDS,
     BookingStateError,
+    CLAIM_TTL_MS,
     appendAuditEvent,
     bookingAuditKey,
     bookingRequestKey,
+    claimBookingForRedeem,
     createBookingRequest,
     extendBookingExpiry,
     getBookingRequest,
+    hasFreshClaim,
     listBookingRequests,
     markBookingBooked,
     markBookingClicked,
     openTokenPair,
     recordTtlSeconds,
+    releaseBookingClaim,
     sealTokenPair,
     setBookingStatus,
     updateSealedTokens,
@@ -154,6 +158,90 @@ describe("claim-on-load and single-book redeem", () => {
         const error = await markBookingBooked(kv, "rid-book", 556).catch((e: unknown) => e);
         expect(error).toBeInstanceOf(BookingStateError);
         expect((error as BookingStateError).code).toBe("illegal-transition");
+    });
+
+    it("claims a pending record and rejects a live foreign claim", async () => {
+        const kv = await pending("rid-claim");
+        const now = new Date("2026-10-03T12:00:00.000Z");
+        const claimed = await claimBookingForRedeem(kv, "rid-claim", "claim-a", now);
+        expect(claimed.status).toBe("pending");
+        expect(claimed.claimId).toBe("claim-a");
+        expect(hasFreshClaim(claimed, now.getTime())).toBe(true);
+
+        const error = await claimBookingForRedeem(kv, "rid-claim", "claim-b", now).catch(
+            (e: unknown) => e,
+        );
+        expect(error).toBeInstanceOf(BookingStateError);
+        expect((error as BookingStateError).code).toBe("illegal-transition");
+    });
+
+    it("lets a new claim take over a stale one", async () => {
+        const kv = await pending("rid-claim-stale");
+        const then = new Date("2026-10-03T12:00:00.000Z");
+        await claimBookingForRedeem(kv, "rid-claim-stale", "claim-old", then);
+        const later = new Date(then.getTime() + CLAIM_TTL_MS + 1000);
+        const record = await getBookingRequest(kv, "rid-claim-stale");
+        expect(record && hasFreshClaim(record, later.getTime())).toBe(false);
+
+        const taken = await claimBookingForRedeem(kv, "rid-claim-stale", "claim-new", later);
+        expect(taken.claimId).toBe("claim-new");
+    });
+
+    it("refuses claims on terminal records", async () => {
+        const kv = await pending("rid-claim-final");
+        await setBookingStatus(kv, "rid-claim-final", "cancelled");
+        const error = await claimBookingForRedeem(kv, "rid-claim-final", "claim-a").catch(
+            (e: unknown) => e,
+        );
+        expect(error).toBeInstanceOf(BookingStateError);
+        expect((error as BookingStateError).code).toBe("illegal-transition");
+    });
+
+    it("releases only the holder's claim and never throws", async () => {
+        const kv = await pending("rid-release");
+        await claimBookingForRedeem(kv, "rid-release", "claim-a");
+
+        await expect(releaseBookingClaim(kv, "rid-release", "claim-b")).resolves.toBeNull();
+        const held = await getBookingRequest(kv, "rid-release");
+        expect(held?.claimId).toBe("claim-a");
+
+        const released = await releaseBookingClaim(kv, "rid-release", "claim-a");
+        expect(released?.status).toBe("pending");
+        expect(released?.claimId).toBeUndefined();
+        await expect(releaseBookingClaim(kv, "missing", "claim-a")).resolves.toBeNull();
+    });
+
+    it("release returns null instead of throwing when KV fails", async () => {
+        const kv = await pending("rid-release-fail");
+        await claimBookingForRedeem(kv, "rid-release-fail", "claim-a");
+        const failing: KeyValueClient = {
+            ...kv,
+            get: async () => {
+                throw new Error("kv down");
+            },
+        };
+        await expect(
+            releaseBookingClaim(failing, "rid-release-fail", "claim-a"),
+        ).resolves.toBeNull();
+    });
+
+    it("finalizes only for the claim holder and clears the claim", async () => {
+        const kv = await pending("rid-holder");
+        await claimBookingForRedeem(kv, "rid-holder", "claim-a");
+
+        const error = await markBookingBooked(kv, "rid-holder", 556, {
+            expectedClaimId: "claim-b",
+        }).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(BookingStateError);
+        expect((error as BookingStateError).code).toBe("illegal-transition");
+
+        const booked = await markBookingBooked(kv, "rid-holder", 555, {
+            expectedClaimId: "claim-a",
+        });
+        expect(booked.status).toBe("booked");
+        expect(booked.bookedAppointmentId).toBe(555);
+        expect(booked.claimId).toBeUndefined();
+        expect(booked.claimedAt).toBeUndefined();
     });
 
     it("swaps the sealed pair without touching status", async () => {
