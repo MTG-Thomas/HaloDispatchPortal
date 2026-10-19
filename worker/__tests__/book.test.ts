@@ -47,6 +47,24 @@ function futureWeekdayDateString(): string {
     return day.toISOString().slice(0, 10);
 }
 
+/**
+ * The next Tuesday at 07:00Z that is still strictly in the future, as an ISO
+ * instant. The booking handler passes Date.now() to the slot validator, which
+ * rejects any slot starting at or before now, so a pinned timestamp makes the
+ * control booking fail from the moment it expires.
+ *
+ * Tuesday and 07:00Z are what the business-hours assertions depend on: the same
+ * instant reads as 09:00 for a UTC+2 dispatcher and 07:00 for a UTC one.
+ */
+function futureTuesday0700Z(): Date {
+    const instant = new Date();
+    instant.setUTCHours(7, 0, 0, 0);
+    while (instant.getUTCDay() !== 2 || instant.getTime() <= Date.now()) {
+        instant.setUTCDate(instant.getUTCDate() + 1);
+    }
+    return instant;
+}
+
 interface SlotDay {
     date: string;
     slots: { agentId: number; start: string; end: string }[];
@@ -592,10 +610,11 @@ describe("book endpoint", () => {
     it("rejects slots outside dispatcher business hours", async () => {
         // 07:00Z Tuesday is 09:00 for a UTC+2 customer but 07:00 for a UTC
         // dispatcher: in-hours for the picker offset, out for the business.
+        const start = futureTuesday0700Z();
         const body = {
             agentId: 7,
-            start: "2026-10-06T07:00:00.000Z",
-            end: "2026-10-06T07:30:00.000Z",
+            start: start.toISOString(),
+            end: new Date(start.getTime() + 30 * 60_000).toISOString(),
             utcOffset: 120,
         };
         const utcEnv = env();
