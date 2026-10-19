@@ -594,8 +594,8 @@ describe("book endpoint", () => {
         // dispatcher: in-hours for the picker offset, out for the business.
         const body = {
             agentId: 7,
-            start: "2026-10-06T07:00:00.000Z",
-            end: "2026-10-06T07:30:00.000Z",
+            start: "2029-10-02T07:00:00.000Z",
+            end: "2029-10-02T07:30:00.000Z",
             utcOffset: 120,
         };
         const utcEnv = env();
